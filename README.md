@@ -2,6 +2,8 @@
 
 **Unified encrypted catalog of API keys and environment variables across all BB sessions and machines.**
 
+![Env Catalog Screenshot](screenshots/overview.png)
+
 ## Why Env Catalog?
 
 In BB, multiple agents and machines often need access to the same API keys (e.g. OpenAI, Anthropic, Tavily, Stripe, database URLs).

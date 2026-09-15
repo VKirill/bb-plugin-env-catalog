@@ -10,7 +10,7 @@
     "name": "Env Catalog",
     "description": "Unified secret and environment variable catalog with agent access and instant multi-machine sync.",
     "branding": {
-      "icon": "Key"
+      "icon": "./assets/icon.svg"
     },
     "server": "./server.ts",
     "app": "./app.tsx",
@@ -56,6 +56,15 @@
     "developer-tools"
   ],
   "license": "MIT",
+  "author": "Kirill Vechkasov <https://github.com/VKirill>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/VKirill/bb-plugin-env-catalog.git"
+  },
+  "homepage": "https://github.com/VKirill/bb-plugin-env-catalog#readme",
+  "bugs": {
+    "url": "https://github.com/VKirill/bb-plugin-env-catalog/issues"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "bb plugin build",

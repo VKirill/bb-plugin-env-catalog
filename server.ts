@@ -2,6 +2,7 @@ import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
+import Database from "better-sqlite3";
 import { z } from "zod";
 
 export interface EnvRecord {
@@ -17,9 +18,9 @@ export interface EnvRecord {
 export interface EnvSummary {
   name: string;
   maskedValue: string;
-  description?: string;
-  service?: string;
-  tags?: string[];
+  description?: string | null;
+  service?: string | null;
+  tags?: string[] | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -27,9 +28,9 @@ export interface EnvSummary {
 const summarySchema = z.object({
   name: z.string(),
   maskedValue: z.string(),
-  description: z.string().optional(),
-  service: z.string().optional(),
-  tags: z.array(z.string()).optional(),
+  description: z.string().nullable().optional(),
+  service: z.string().nullable().optional(),
+  tags: z.array(z.string()).nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -37,7 +38,7 @@ const summarySchema = z.object({
 export const rpcContract = defineRpcContract({
   env_list: {
     input: z.object({
-      query: z.string().optional(),
+      query: z.string().nullable().optional(),
     }),
     output: z.object({
       variables: z.array(summarySchema),
@@ -50,18 +51,18 @@ export const rpcContract = defineRpcContract({
     output: z.object({
       name: z.string(),
       value: z.string(),
-      description: z.string().optional(),
-      service: z.string().optional(),
-      tags: z.array(z.string()).optional(),
+      description: z.string().nullable().optional(),
+      service: z.string().nullable().optional(),
+      tags: z.array(z.string()).nullable().optional(),
     }),
   },
   env_save: {
     input: z.object({
       name: z.string().trim().min(1),
       value: z.string(),
-      description: z.string().optional(),
-      service: z.string().optional(),
-      tags: z.array(z.string()).optional(),
+      description: z.string().nullable().optional(),
+      service: z.string().nullable().optional(),
+      tags: z.array(z.string()).nullable().optional(),
     }),
     output: z.object({
       success: z.boolean(),
@@ -94,6 +95,12 @@ export const rpcContract = defineRpcContract({
       importedCount: z.number(),
     }),
   },
+  env_import_machine_env: {
+    input: z.null(),
+    output: z.object({
+      importedCount: z.number(),
+    }),
+  },
 });
 
 export const ENV_CATALOG_CHANGED = "env-catalog:changed";
@@ -104,6 +111,22 @@ function maskValue(val: string): string {
   const start = val.slice(0, 4);
   const end = val.slice(-4);
   return `${start}••••••••${end}`;
+}
+
+function inferService(name: string): string | undefined {
+  const upper = name.toUpperCase();
+  if (upper.includes("OPENAI")) return "OpenAI";
+  if (upper.includes("DEEPSEEK")) return "DeepSeek";
+  if (upper.includes("FAL")) return "fal.ai";
+  if (upper.includes("GH_") || upper.includes("GITHUB")) return "GitHub";
+  if (upper.includes("GROQ")) return "Groq";
+  if (upper.includes("KIE")) return "Kie.ai";
+  if (upper.includes("MUTAGEN")) return "Mutagen";
+  if (upper.includes("TG_") || upper.includes("TELEGRAM")) return "Telegram";
+  if (upper.includes("XMLSTOCK")) return "xmlstock";
+  if (upper.includes("GEMINI") || upper.includes("GOOGLE")) return "Google Gemini";
+  if (upper.includes("ALPHAXIV")) return "alphaXiv";
+  return undefined;
 }
 
 export default async function plugin(bb: BbPluginApi) {
@@ -188,7 +211,7 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
 
-  async function listSummaries(searchQuery?: string): Promise<EnvSummary[]> {
+  async function listSummaries(searchQuery?: string | null): Promise<EnvSummary[]> {
     let rows: DbRow[];
     if (searchQuery && searchQuery.trim().length > 0) {
       const pattern = `%${searchQuery.trim().toLowerCase()}%`;
@@ -215,9 +238,9 @@ export default async function plugin(bb: BbPluginApi) {
       return {
         name: row.name,
         maskedValue: maskValue(decrypted),
-        description: row.description ?? undefined,
-        service: row.service ?? undefined,
-        tags: parseTags(row.tags),
+        description: row.description ?? null,
+        service: row.service ?? null,
+        tags: parseTags(row.tags) ?? null,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
       };
@@ -245,9 +268,9 @@ export default async function plugin(bb: BbPluginApi) {
   async function saveVariable(params: {
     name: string;
     value: string;
-    description?: string;
-    service?: string;
-    tags?: string[];
+    description?: string | null;
+    service?: string | null;
+    tags?: string[] | null;
   }): Promise<void> {
     const now = new Date().toISOString();
     const cleanName = params.name.trim();
@@ -313,7 +336,6 @@ export default async function plugin(bb: BbPluginApi) {
       if (r.description) {
         lines.push(`# ${r.description}${r.service ? ` (${r.service})` : ""}`);
       }
-      // Escape value if it contains spaces or special characters
       const escaped =
         r.value.includes(" ") || r.value.includes("\n") || r.value.includes('"')
           ? JSON.stringify(r.value)
@@ -354,7 +376,6 @@ export default async function plugin(bb: BbPluginApi) {
         throw new Error(`Invalid JSON format: ${err instanceof Error ? err.message : String(err)}`);
       }
     } else {
-      // .env parser
       const lines = content.split("\n");
       let currentComment: string | undefined;
 
@@ -373,7 +394,6 @@ export default async function plugin(bb: BbPluginApi) {
           const key = line.slice(0, eqIdx).trim();
           let rawVal = line.slice(eqIdx + 1).trim();
 
-          // Remove enclosing quotes if present
           if (
             (rawVal.startsWith('"') && rawVal.endsWith('"')) ||
             (rawVal.startsWith("'") && rawVal.endsWith("'"))
@@ -406,6 +426,74 @@ export default async function plugin(bb: BbPluginApi) {
     return count;
   }
 
+  function importFromMachineEnvironment(): number {
+    const keyFile = join(dataDir, "machine-environment-key");
+    const mainDbFile = join(dataDir, "bb.db");
+
+    if (!existsSync(keyFile) || !existsSync(mainDbFile)) {
+      return 0;
+    }
+
+    const keyHex = readFileSync(keyFile, "utf8").trim();
+    if (!/^[a-f0-9]{64}$/u.test(keyHex)) {
+      return 0;
+    }
+    const key = Buffer.from(keyHex, "hex");
+
+    const mainDb = new Database(mainDbFile, { readonly: true });
+    try {
+      const rows = mainDb
+        .prepare(
+          "SELECT key, value FROM app_settings_values WHERE key LIKE 'machineEnvironment:%'"
+        )
+        .all() as Array<{ key: string; value: string }>;
+
+      let count = 0;
+      for (const r of rows) {
+        try {
+          const parsed = JSON.parse(r.value);
+          if (!parsed.name || !parsed.ciphertext) continue;
+
+          const encrypted = Buffer.from(parsed.ciphertext, "base64");
+          const iv = encrypted.subarray(0, 12);
+          const authTag = encrypted.subarray(12, 28);
+          const ciphertext = encrypted.subarray(28);
+
+          const decipher = createDecipheriv("aes-256-gcm", key, iv);
+          decipher.setAAD(Buffer.from(parsed.name));
+          decipher.setAuthTag(authTag);
+          const val = Buffer.concat([
+            decipher.update(ciphertext),
+            decipher.final(),
+          ]).toString("utf8");
+
+          const service = inferService(parsed.name);
+          const description =
+            parsed.note || (service ? `${service} API key / credential` : undefined);
+
+          saveVariable({
+            name: parsed.name,
+            value: val,
+            description,
+            service,
+          });
+          count++;
+        } catch (err) {
+          bb.log.warn(`Failed to decrypt machine environment variable: ${String(err)}`);
+        }
+      }
+      if (count > 0) {
+        bb.realtime.publish(ENV_CATALOG_CHANGED, {
+          action: "import-machine-env",
+          count,
+        });
+      }
+      return count;
+    } finally {
+      mainDb.close();
+    }
+  }
+
   // Register RPC Handlers for Frontend UI
   bb.rpc.register(rpcContract, {
     env_list: async ({ query }) => ({
@@ -419,9 +507,9 @@ export default async function plugin(bb: BbPluginApi) {
       return {
         name: record.name,
         value: record.value,
-        description: record.description,
-        service: record.service,
-        tags: record.tags,
+        description: record.description ?? null,
+        service: record.service ?? null,
+        tags: record.tags ?? null,
       };
     },
     env_save: async (params) => {
@@ -437,6 +525,9 @@ export default async function plugin(bb: BbPluginApi) {
     }),
     env_import: async ({ content, format, overwrite }) => ({
       importedCount: await importContent(content, format, overwrite),
+    }),
+    env_import_machine_env: async () => ({
+      importedCount: importFromMachineEnvironment(),
     }),
   });
 
@@ -564,6 +655,7 @@ export default async function plugin(bb: BbPluginApi) {
     "  bb env-catalog set <NAME> <VALUE> [--desc <text>] [--service <text>]",
     "  bb env-catalog delete <NAME>",
     "  bb env-catalog export [--format env|json]",
+    "  bb env-catalog import-machine-env",
   ].join("\n");
 
   bb.cli.register({
@@ -594,6 +686,11 @@ export default async function plugin(bb: BbPluginApi) {
         name: "export",
         summary: "Export secrets as .env or JSON",
         usage: "bb env-catalog export [--format env|json]",
+      },
+      {
+        name: "import-machine-env",
+        summary: "Import and decrypt all keys from BB Machine Environment",
+        usage: "bb env-catalog import-machine-env",
       },
     ],
     async run(argv) {
@@ -688,6 +785,14 @@ export default async function plugin(bb: BbPluginApi) {
           }
           const content = await exportAll(fmt);
           return { exitCode: 0, stdout: content };
+        }
+
+        case "import-machine-env": {
+          const count = importFromMachineEnvironment();
+          return reply(
+            { importedCount: count },
+            `Successfully imported and decrypted ${count} keys from BB Machine Environment.`
+          );
         }
       }
 

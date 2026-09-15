@@ -30,7 +30,7 @@ function useEnvCatalog() {
 
   const refetch = useCallback(() => {
     rpc
-      .call("env_list", { query: searchQuery || undefined })
+      .call("env_list", { query: searchQuery.trim() ? searchQuery.trim() : null })
       .then((res) => {
         setVariables(res.variables);
         setError(null);
@@ -112,6 +112,19 @@ function EnvCatalogPage() {
   // Import form state
   const [importText, setImportText] = useState("");
   const [importPending, setImportPending] = useState(false);
+  const [importingMachineEnv, setImportingMachineEnv] = useState(false);
+
+  const handleImportMachineEnv = async () => {
+    setImportingMachineEnv(true);
+    try {
+      await rpc.call("env_import_machine_env", null);
+      refetch();
+    } catch (cause) {
+      report(cause);
+    } finally {
+      setImportingMachineEnv(false);
+    }
+  };
 
   const openAddModal = () => {
     setEditingItem(null);
@@ -246,7 +259,17 @@ function EnvCatalogPage() {
               Encrypted API keys and secrets. Available to agents across all BB sessions and machines.
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleImportMachineEnv}
+              disabled={importingMachineEnv}
+              aria-label="Import from BB Machine Environment"
+            >
+              <Icon name="FolderSync" className="mr-1.5 size-4" />
+              {importingMachineEnv ? "Syncing…" : "Sync Machine Env"}
+            </Button>
             <Button
               variant="outline"
               size="sm"

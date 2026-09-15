@@ -252,8 +252,8 @@ function EnvCatalogPage() {
     <div className="h-full min-h-0 flex-1 overflow-y-auto bg-background text-foreground">
       <div className="mx-auto box-border w-full max-w-5xl px-4 pb-12 pt-6 md:px-6">
         {/* Header */}
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="max-w-md">
             <div className="flex items-center gap-2.5">
               <h1 className="text-xl font-semibold tracking-tight">Env Catalog</h1>
               <span className="rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground">
@@ -264,42 +264,49 @@ function EnvCatalogPage() {
               Encrypted API keys and secrets. Synchronized across all BB sessions and machines.
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleImportMachineEnv}
-              disabled={importingMachineEnv}
-              aria-label="Import from BB Machine Environment"
-              className="h-9 px-3"
-            >
-              <Icon name="FolderSync" className="mr-1.5 size-4" />
-              {importingMachineEnv ? "Syncing…" : "Sync Machine Env"}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => handleExport("env")}
-              aria-label="Export as .env format"
-              className="h-9 px-3"
-            >
-              <Icon name="Download" className="mr-1.5 size-4" />
-              Export
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setImportModalOpen(true)}
-              aria-label="Import .env or JSON"
-              className="h-9 px-3"
-            >
-              <Icon name="FolderExport" className="mr-1.5 size-4" />
-              Import
-            </Button>
+
+          {/* Right-aligned action buttons cluster */}
+          <div className="flex flex-col items-stretch sm:items-end gap-2 shrink-0 sm:w-[340px]">
+            {/* Row 1: The three secondary actions */}
+            <div className="grid grid-cols-3 gap-2 w-full">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleImportMachineEnv}
+                disabled={importingMachineEnv}
+                aria-label="Import from BB Machine Environment"
+                className="h-9 px-2 text-xs"
+              >
+                <Icon name="FolderSync" className="mr-1 size-3.5" />
+                {importingMachineEnv ? "Syncing…" : "Sync Env"}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handleExport("env")}
+                aria-label="Export as .env format"
+                className="h-9 px-2 text-xs"
+              >
+                <Icon name="Download" className="mr-1 size-3.5" />
+                Export
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setImportModalOpen(true)}
+                aria-label="Import .env or JSON"
+                className="h-9 px-2 text-xs"
+              >
+                <Icon name="FolderExport" className="mr-1 size-3.5" />
+                Import
+              </Button>
+            </div>
+
+            {/* Row 2: Add Secret button spanning the full width of the three buttons */}
             <Button
               size="default"
               onClick={openAddModal}
-              className="h-9 px-4 font-medium"
+              className="w-full h-9 font-medium shadow-xs"
             >
               <Icon name="Plus" className="mr-1.5 size-4" />
               Add Secret
@@ -369,7 +376,7 @@ function EnvCatalogPage() {
                   return (
                     <li
                       key={item.name}
-                      className="p-3.5 transition-colors hover:bg-muted/20 md:grid md:grid-cols-[220px_1fr_260px_72px] md:items-center md:gap-4"
+                      className="px-4 py-3 transition-colors hover:bg-muted/20 md:grid md:grid-cols-[220px_1fr_260px_72px] md:items-center md:gap-4"
                     >
                       {/* Column 1: Key name & service */}
                       <div className="min-w-0">

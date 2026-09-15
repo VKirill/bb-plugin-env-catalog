@@ -266,7 +266,7 @@ function EnvCatalogPage() {
           </div>
 
           {/* Right-aligned action buttons cluster */}
-          <div className="flex flex-col items-stretch sm:items-end gap-2 shrink-0 sm:w-[340px]">
+          <div className="flex flex-col gap-2 w-full sm:w-[360px] shrink-0 sm:ml-auto">
             {/* Row 1: The three secondary actions */}
             <div className="grid grid-cols-3 gap-2 w-full">
               <Button
@@ -275,30 +275,30 @@ function EnvCatalogPage() {
                 onClick={handleImportMachineEnv}
                 disabled={importingMachineEnv}
                 aria-label="Import from BB Machine Environment"
-                className="h-9 px-2 text-xs"
+                className="w-full h-9 px-2 text-xs font-normal"
               >
-                <Icon name="FolderSync" className="mr-1 size-3.5" />
-                {importingMachineEnv ? "Syncing…" : "Sync Env"}
+                <Icon name="FolderSync" className="mr-1 size-3.5 shrink-0" />
+                <span className="truncate">{importingMachineEnv ? "Syncing…" : "Sync Env"}</span>
               </Button>
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => handleExport("env")}
                 aria-label="Export as .env format"
-                className="h-9 px-2 text-xs"
+                className="w-full h-9 px-2 text-xs font-normal"
               >
-                <Icon name="Download" className="mr-1 size-3.5" />
-                Export
+                <Icon name="Download" className="mr-1 size-3.5 shrink-0" />
+                <span>Export</span>
               </Button>
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => setImportModalOpen(true)}
                 aria-label="Import .env or JSON"
-                className="h-9 px-2 text-xs"
+                className="w-full h-9 px-2 text-xs font-normal"
               >
-                <Icon name="FolderExport" className="mr-1 size-3.5" />
-                Import
+                <Icon name="FolderExport" className="mr-1 size-3.5 shrink-0" />
+                <span>Import</span>
               </Button>
             </div>
 

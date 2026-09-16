@@ -1,9 +1,10 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
+import { defineRpcContract, type BbPluginApi, type PluginCliContext } from "@get-bb/plugin-sdk";
 import Database from "better-sqlite3";
 import { z } from "zod";
+import { ENV_REQUEST_RENDERER_ID, envRequestResponseSchema } from "./contracts.js";
 
 export interface EnvRecord {
   name: string;
@@ -640,9 +641,158 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
+  async function requestSecretsFromUser(options: {
+    threadId: string;
+    fields: Array<{ name: string; description?: string | null; service?: string | null }>;
+    purpose?: string | null;
+    signal?: AbortSignal;
+  }): Promise<
+    | { outcome: "submitted"; values: Record<string, string> }
+    | { outcome: "cancelled"; reason: string }
+  > {
+    const title =
+      options.fields.length === 1
+        ? `Add ${options.fields[0].name} to Env Catalog`
+        : `Add secrets to Env Catalog (${options.fields.length} variables)`;
+
+    const result = await bb.ui.requestInput(
+      {
+        threadId: options.threadId,
+        rendererId: ENV_REQUEST_RENDERER_ID,
+        title,
+        payload: {
+          purpose: options.purpose ?? null,
+          fields: options.fields.map((f) => ({
+            name: f.name,
+            description: f.description ?? null,
+            service: f.service ?? inferService(f.name) ?? null,
+          })),
+        },
+      },
+      { signal: options.signal }
+    );
+
+    if (result.outcome === "cancelled") {
+      return { outcome: "cancelled", reason: result.reason };
+    }
+
+    const parsed = envRequestResponseSchema.safeParse(result.value);
+    if (!parsed.success) {
+      throw new Error("Invalid response received from secret input form.");
+    }
+
+    return { outcome: "submitted", values: parsed.data.values };
+  }
+
+  bb.agents.registerTool({
+    name: "env_request",
+    description:
+      "Securely prompt the user with a masked in-app input form to enter one or more API keys or secrets. Use this whenever an API key or credential is required but not found in the Env Catalog, instead of asking the user in plain chat. Values are encrypted and saved directly to the Env Catalog without appearing in chat history.",
+    parameters: z.object({
+      name: z
+        .string()
+        .optional()
+        .describe(
+          "Variable name to request (e.g. OPENAI_API_KEY). If requesting multiple, use 'names' or comma-separated names."
+        ),
+      names: z
+        .array(z.string())
+        .optional()
+        .describe(
+          "List of variable names if requesting multiple at once (e.g. ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY'])"
+        ),
+      purpose: z
+        .string()
+        .optional()
+        .describe(
+          "Short reason why this API key is needed (shown to the user in the prompt dialog)"
+        ),
+      description: z
+        .string()
+        .optional()
+        .describe("Short description of what the key is"),
+      service: z
+        .string()
+        .optional()
+        .describe("Service name (e.g. OpenAI, Anthropic, Tavily, Google)"),
+    }),
+    presentation: {
+      label: {
+        pending: "Requesting secret from user via secure form",
+        completed: "Requested secret from user via secure form",
+      },
+    },
+    async execute(params, ctx) {
+      const targetThreadId = ctx.threadId || process.env.BB_THREAD_ID;
+      if (!targetThreadId) {
+        return JSON.stringify({
+          success: false,
+          error: "Cannot request secrets without an active thread context.",
+        });
+      }
+
+      const rawNames: string[] = [];
+      if (params.names && Array.isArray(params.names) && params.names.length > 0) {
+        for (const n of params.names) {
+          if (typeof n === "string" && n.trim()) rawNames.push(n.trim());
+        }
+      } else if (params.name && params.name.trim()) {
+        const split = params.name.split(",").map((s) => s.trim()).filter(Boolean);
+        rawNames.push(...split);
+      }
+
+      if (rawNames.length === 0) {
+        return JSON.stringify({
+          success: false,
+          error: "Specify at least one variable name to request (e.g. name: 'OPENAI_API_KEY').",
+        });
+      }
+
+      const fields = rawNames.map((name) => ({
+        name,
+        description: params.description ?? null,
+        service: params.service ?? inferService(name) ?? null,
+      }));
+
+      const promptResult = await requestSecretsFromUser({
+        threadId: targetThreadId,
+        fields,
+        purpose: params.purpose ?? null,
+        signal: ctx.signal,
+      });
+
+      if (promptResult.outcome === "cancelled") {
+        return JSON.stringify({
+          success: false,
+          cancelled: true,
+          reason: promptResult.reason,
+          message: `The user dismissed or cancelled the secret input form (${promptResult.reason}). Proceed with available alternatives or ask how to proceed.`,
+        });
+      }
+
+      const savedNames: string[] = [];
+      for (const [key, val] of Object.entries(promptResult.values)) {
+        const fieldMeta = fields.find((f) => f.name === key);
+        await saveVariable({
+          name: key,
+          value: val,
+          description: fieldMeta?.description ?? undefined,
+          service: fieldMeta?.service ?? undefined,
+        });
+        savedNames.push(key);
+      }
+
+      return JSON.stringify({
+        success: true,
+        saved: savedNames,
+        message: `Successfully received and encrypted ${savedNames.join(", ")} in Env Catalog. The values are preserved for future use and never disclosed in chat history.`,
+      });
+    },
+  });
+
   // Dynamic Instructions for Agents
   bb.agents.contributeInstructions(() => {
-    return "Env Catalog is active. When an API key, token, or secret is needed for an external service or script, check available credentials using `env_list` and retrieve the required value with `env_get`. When the user provides a new API key or credential in the conversation, proactively store it in the catalog using `env_set` so it is preserved across all sessions and machines.";
+    return "Env Catalog is active. When an API key, token, or secret is needed for an external service or script, check available credentials using `env_list` and retrieve the required value with `env_get`. If a required key is missing, NEVER ask the user to paste it into chat; instead, call `env_request` to open a secure masked input form in the UI. The secret will be encrypted and stored directly in the Env Catalog without leaking into chat history. When the user provides a new credential in conversation, store it using `env_set`.";
   });
 
   // CLI Command Registration
@@ -653,10 +803,67 @@ export default async function plugin(bb: BbPluginApi) {
     "  bb env-catalog list [--query <text>] [--json]",
     "  bb env-catalog get <NAME> [--raw]",
     "  bb env-catalog set <NAME> <VALUE> [--desc <text>] [--service <text>]",
+    "  bb env-catalog request <NAME...> [--purpose <text>] [--describe <NAME> <text>] [--service <text>]",
     "  bb env-catalog delete <NAME>",
     "  bb env-catalog export [--format env|json]",
     "  bb env-catalog import-machine-env",
   ].join("\n");
+
+  function parseCliRequest(args: string[]): {
+    names: string[];
+    purpose: string | null;
+    descriptions: Map<string, string>;
+    services: Map<string, string>;
+    defaultService: string | null;
+    threadId: string | null;
+  } {
+    const names: string[] = [];
+    const descriptions = new Map<string, string>();
+    const services = new Map<string, string>();
+    let defaultService: string | null = null;
+    let purpose: string | null = null;
+    let threadId: string | null = null;
+
+    for (let i = 0; i < args.length; i++) {
+      const token = args[i] ?? "";
+      if (!token.startsWith("--")) {
+        names.push(token.trim());
+        continue;
+      }
+      if (token === "--thread") {
+        i++;
+        threadId = args[i]?.trim() ?? null;
+        continue;
+      }
+      if (token === "--purpose") {
+        i++;
+        purpose = args[i]?.trim() ?? null;
+        continue;
+      }
+      if (token === "--service") {
+        i++;
+        const next1 = args[i]?.trim();
+        const next2 = args[i + 1]?.trim();
+        if (next1 && next2 && !next2.startsWith("--")) {
+          services.set(next1, next2);
+          i++;
+        } else if (next1) {
+          defaultService = next1;
+        }
+        continue;
+      }
+      if (token === "--describe") {
+        const varName = args[++i]?.trim();
+        const desc = args[++i]?.trim();
+        if (varName && desc) {
+          descriptions.set(varName, desc);
+        }
+        continue;
+      }
+    }
+
+    return { names, purpose, descriptions, services, defaultService, threadId };
+  }
 
   bb.cli.register({
     name: "env-catalog",
@@ -678,6 +885,12 @@ export default async function plugin(bb: BbPluginApi) {
         usage: "bb env-catalog set <NAME> <VALUE> [--desc <text>] [--service <text>]",
       },
       {
+        name: "request",
+        summary: "Securely request secrets from user via masked form in thread",
+        usage:
+          "bb env-catalog request <NAME...> [--purpose <text>] [--describe <NAME> <text>]... [--service <text>]",
+      },
+      {
         name: "delete",
         summary: "Delete a secret",
         usage: "bb env-catalog delete <NAME>",
@@ -693,7 +906,7 @@ export default async function plugin(bb: BbPluginApi) {
         usage: "bb env-catalog import-machine-env",
       },
     ],
-    async run(argv) {
+    async run(argv, ctx) {
       const json = argv.includes("--json");
       const raw = argv.includes("--raw");
       const filtered = argv.filter((a) => a !== "--json" && a !== "--raw");
@@ -767,6 +980,57 @@ export default async function plugin(bb: BbPluginApi) {
 
           await saveVariable({ name, value, description, service });
           return reply({ success: true, name }, `Saved '${name}' to Env Catalog.`);
+        }
+
+        case "request": {
+          const { names, purpose, descriptions, services, defaultService, threadId } =
+            parseCliRequest(args);
+          const targetThreadId = threadId || ctx.threadId || process.env.BB_THREAD_ID;
+          if (!targetThreadId) {
+            return error(
+              "bb env-catalog request must be run from an active BB thread where the secure form can be displayed, or specify --thread <id>."
+            );
+          }
+          if (names.length === 0) {
+            return error(
+              "Specify at least one variable name: bb env-catalog request <NAME...> [--purpose <text>]"
+            );
+          }
+
+          const fields = names.map((name) => ({
+            name,
+            description: descriptions.get(name) ?? null,
+            service:
+              services.get(name) ?? defaultService ?? inferService(name) ?? null,
+          }));
+
+          const promptResult = await requestSecretsFromUser({
+            threadId: targetThreadId,
+            fields,
+            purpose,
+            signal: ctx.signal,
+          });
+
+          if (promptResult.outcome === "cancelled") {
+            return error(`Secret request cancelled (${promptResult.reason}).`);
+          }
+
+          const savedNames: string[] = [];
+          for (const [key, val] of Object.entries(promptResult.values)) {
+            const fieldMeta = fields.find((f) => f.name === key);
+            await saveVariable({
+              name: key,
+              value: val,
+              description: fieldMeta?.description ?? undefined,
+              service: fieldMeta?.service ?? undefined,
+            });
+            savedNames.push(key);
+          }
+
+          return reply(
+            { success: true, saved: savedNames },
+            `Saved ${savedNames.length} secret${savedNames.length === 1 ? "" : "s"} to Env Catalog: ${savedNames.join(", ")}.\n`
+          );
         }
 
         case "delete": {

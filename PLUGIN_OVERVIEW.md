@@ -8,13 +8,14 @@ All values are encrypted at rest using AES-256-GCM. Because data is stored in SQ
 
 ## Dedicated agent tools and automatic instructions
 
-The plugin equips every BB agent with four native tools:
+The plugin equips every BB agent with native tools:
+- `env_request`: Opens a secure masked in-app modal in the thread to ask for missing credentials. Secrets are encrypted directly to the catalog without exposing them in chat transcripts.
 - `env_list`: Discovers available variable names and services while omitting raw values to preserve context tokens.
 - `env_get`: Retrieves a decrypted secret value on demand.
 - `env_set`: Stores newly provided keys with optional service tags and usage notes.
 - `env_delete`: Removes obsolete secrets.
 
-A lightweight system instruction (~50 tokens) is automatically provided to agents at the start of each session, ensuring they check the catalog before prompting the user for credentials.
+A lightweight system instruction is automatically provided to agents at the start of each session, ensuring they check the catalog before asking for credentials, and use `env_request` instead of asking the user to type secrets into plain chat.
 
 ## Visual management and bulk operations
 

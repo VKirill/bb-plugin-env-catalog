@@ -1,7 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
-import { definePluginApp, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
+import {
+  definePluginApp,
+  useRealtime,
+  useRpc,
+  type PluginPendingInteractionProps,
+} from "@get-bb/plugin-sdk/app";
 import type { rpcContract, EnvSummary } from "./server";
+import {
+  ENV_REQUEST_RENDERER_ID,
+  envRequestPayloadSchema,
+  envRequestResponseSchema,
+} from "./contracts.js";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
@@ -711,6 +721,222 @@ function EnvCatalogPage() {
   );
 }
 
+function EnvCatalogRequestInteraction({
+  interaction,
+  submit,
+  cancel,
+}: PluginPendingInteractionProps) {
+  const parsed = useMemo(
+    () => envRequestPayloadSchema.safeParse(interaction.payload),
+    [interaction.payload]
+  );
+
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [revealed, setRevealed] = useState<Record<string, boolean>>({});
+  const [busy, setBusy] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+
+  if (!parsed.success) {
+    return (
+      <div className="space-y-3 rounded-lg border border-destructive/30 bg-destructive/10 p-4">
+        <p className="text-sm font-medium text-destructive">
+          Invalid credential request payload.
+        </p>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => void cancel().catch(() => undefined)}
+        >
+          Dismiss
+        </Button>
+      </div>
+    );
+  }
+
+  const payload = parsed.data;
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    setFormError(null);
+
+    // Validate that each requested variable has a value
+    for (const field of payload.fields) {
+      const val = values[field.name]?.trim();
+      if (!val) {
+        setFormError(`Please enter a value for ${field.name}.`);
+        return;
+      }
+      if (val.length > 16 * 1024) {
+        setFormError(`Value for ${field.name} exceeds maximum size (16 KiB).`);
+        return;
+      }
+    }
+
+    const validated = envRequestResponseSchema.safeParse({ values });
+    if (!validated.success) {
+      setFormError("Every secret must be a valid non-empty value.");
+      return;
+    }
+
+    setBusy(true);
+    try {
+      await submit(validated.data);
+      setValues({});
+    } catch (cause) {
+      setFormError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleCancel = async () => {
+    setBusy(true);
+    try {
+      await cancel();
+    } catch {
+      // Ignored
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form
+      className="space-y-4 rounded-lg border border-border bg-card p-4 shadow-xs"
+      onSubmit={handleSubmit}
+    >
+      <div className="space-y-1.5">
+        <div className="flex items-center gap-2">
+          <div className="flex size-6 items-center justify-center rounded bg-primary/10 text-primary">
+            <Icon name="Zap" className="size-3.5" />
+          </div>
+          <h3 className="text-sm font-semibold text-foreground">
+            {interaction.title || "Add Secrets to Env Catalog"}
+          </h3>
+        </div>
+
+        {payload.purpose ? (
+          <p className="text-pretty text-xs leading-relaxed text-foreground">
+            {payload.purpose}
+          </p>
+        ) : null}
+
+        <p className="text-[11px] text-muted-foreground">
+          Values are encrypted with <span className="font-mono font-medium text-foreground">AES-256-GCM</span> and stored securely in the Env Catalog. They will never appear in chat history.
+        </p>
+      </div>
+
+      <div className="space-y-3 pt-1">
+        {payload.fields.map((field) => {
+          const inputId = `env-req-${interaction.id}-${field.name}`;
+          const isRevealed = Boolean(revealed[field.name]);
+
+          return (
+            <div key={field.name} className="space-y-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <label
+                  htmlFor={inputId}
+                  className="font-mono text-xs font-semibold text-foreground"
+                >
+                  {field.name}
+                </label>
+                {field.service ? (
+                  <span className="rounded bg-secondary px-1.5 py-0.5 text-[10px] font-medium text-secondary-foreground">
+                    {field.service}
+                  </span>
+                ) : null}
+              </div>
+
+              {field.description ? (
+                <p className="text-[11px] leading-snug text-muted-foreground">
+                  {field.description}
+                </p>
+              ) : null}
+
+              <div className="relative">
+                <Input
+                  id={inputId}
+                  name={field.name}
+                  type={isRevealed ? "text" : "password"}
+                  autoComplete="off"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  required
+                  placeholder={`Enter ${field.name}`}
+                  value={values[field.name] ?? ""}
+                  onChange={(e) =>
+                    setValues((prev) => ({
+                      ...prev,
+                      [field.name]: e.target.value,
+                    }))
+                  }
+                  disabled={busy}
+                  className="bg-background pr-10 font-mono text-xs"
+                />
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="absolute right-1 top-1/2 size-7 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  aria-label={isRevealed ? "Hide value" : "Reveal value"}
+                  onClick={() =>
+                    setRevealed((prev) => ({
+                      ...prev,
+                      [field.name]: !prev[field.name],
+                    }))
+                  }
+                  disabled={busy}
+                >
+                  <Icon
+                    name={isRevealed ? "EyeOff" : "Eye"}
+                    className="size-3.5"
+                  />
+                </Button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {formError ? (
+        <div
+          role="alert"
+          className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-1.5 text-xs text-destructive"
+        >
+          {formError}
+        </div>
+      ) : null}
+
+      <div className="flex flex-col-reverse gap-2 border-t border-border/70 pt-3 sm:flex-row sm:items-center sm:justify-end">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="w-full sm:w-auto"
+          disabled={busy}
+          onClick={() => void handleCancel()}
+        >
+          Cancel
+        </Button>
+        <Button
+          type="submit"
+          size="sm"
+          className="w-full sm:w-auto"
+          disabled={busy}
+        >
+          {busy ? (
+            <Icon name="Spinner" className="mr-1.5 size-3.5 animate-spin" />
+          ) : (
+            <Icon name="Check" className="mr-1.5 size-3.5" />
+          )}
+          Save to Env Catalog
+        </Button>
+      </div>
+    </form>
+  );
+}
+
 export default definePluginApp((app) => {
   app.slots.navPanel({
     id: "env-catalog",
@@ -718,5 +944,10 @@ export default definePluginApp((app) => {
     icon: "Lock",
     path: "env-catalog",
     component: EnvCatalogPage,
+  });
+
+  app.slots.pendingInteraction({
+    id: ENV_REQUEST_RENDERER_ID,
+    component: EnvCatalogRequestInteraction,
   });
 });

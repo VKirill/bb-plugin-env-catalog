@@ -19,7 +19,8 @@ Instead of repeatedly asking the user for credentials or keeping unencrypted key
 ## Agent Capabilities
 
 When the plugin is enabled, all BB agents automatically receive:
-- **System Instructions:** Reminding the agent to check `env_list` / `env_get` when credentials are required, and to persist new credentials via `env_set`.
+- **System Instructions:** Reminding the agent to check `env_list` / `env_get` when credentials are required, to use `env_request` when a key is missing instead of asking in chat, and to persist new credentials via `env_set`.
+- **`env_request`:** Prompts the user with a secure masked in-app modal in the thread to input sensitive API keys. Values are encrypted directly into the catalog and never leak into the chat transcript.
 - **`env_list`:** Lists all variable names, services, and descriptions (masked values).
 - **`env_get`:** Retrieves the decrypted value of a specific secret by name.
 - **`env_set`:** Stores or updates an API key with optional service tags and description.
@@ -32,6 +33,9 @@ When the plugin is enabled, all BB agents automatically receive:
 You or your scripts can interact with the catalog directly from any terminal:
 
 ```bash
+# Securely request credentials via masked modal in thread
+bb env-catalog request OPENAI_API_KEY --purpose "Configure server" --describe OPENAI_API_KEY "OpenAI key"
+
 # List all stored secrets (masked)
 bb env-catalog list
 

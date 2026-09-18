@@ -171,8 +171,8 @@ function EnvCatalogPage() {
       await rpc.call("env_save", {
         name: formData.name.trim(),
         value: formData.value,
-        service: formData.service.trim() || undefined,
-        description: formData.description.trim() || undefined,
+        service: formData.service.trim() || null,
+        description: formData.description.trim() || null,
       });
       setAddModalOpen(false);
       refetch();
@@ -194,7 +194,7 @@ function EnvCatalogPage() {
   };
 
   const toggleReveal = async (name: string) => {
-    if (revealed[name]) {
+    if (name in revealed) {
       // Hide
       setRevealed((prev) => {
         const copy = { ...prev };
@@ -377,7 +377,7 @@ function EnvCatalogPage() {
 
               <ul className="divide-y divide-border">
                 {filtered.map((item) => {
-                  const isRevealed = Boolean(revealed[item.name]);
+                  const isRevealed = item.name in revealed;
                   const displayValue = isRevealed
                     ? revealed[item.name]
                     : item.maskedValue;
@@ -505,7 +505,16 @@ function EnvCatalogPage() {
       </div>
 
       {/* Add / Edit Dialog */}
-      <Dialog open={addModalOpen} onOpenChange={setAddModalOpen}>
+      <Dialog
+        open={addModalOpen}
+        onOpenChange={(open) => {
+          setAddModalOpen(open);
+          if (!open) {
+            setEditingItem(null);
+            setFormData({ name: "", value: "", service: "", description: "" });
+          }
+        }}
+      >
         <DialogContent className="sm:max-w-md">
           <form onSubmit={handleSave}>
             <DialogHeader>

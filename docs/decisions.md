@@ -2,7 +2,7 @@
 title: Env Catalog Decisions
 type: decisions
 created: 2026-09-27
-updated: 2026-09-27
+updated: 2026-09-28
 status: active
 confidence: medium
 tags: [decisions, credentials, bb-plugin]

@@ -2,7 +2,7 @@
 title: Env Catalog Architecture
 type: architecture
 created: 2026-09-27
-updated: 2026-09-27
+updated: 2026-09-28
 status: active
 confidence: high
 tags: [architecture, bb-plugin, runtime]

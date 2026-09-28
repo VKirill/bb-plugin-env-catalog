@@ -2,9 +2,9 @@
 title: Credential Import and Export
 type: component
 created: 2026-09-27
-updated: 2026-09-27
+updated: 2026-09-28
 status: active
-confidence: high
+confidence: medium
 tags: [credentials, import, export]
 sources:
   - server.ts

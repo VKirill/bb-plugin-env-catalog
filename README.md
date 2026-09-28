@@ -6,6 +6,8 @@ Env Catalog is a BB plugin for storing API keys, FTP/SFTP access, SSH credential
 
 The plugin includes a credential management page and a masked in-thread form for requested credentials. See [Overview](docs/overview.md) and [Features](docs/features/agent-access.md) for how they work.
 
+The interface has English and Russian text and follows BB's document language (`i18n.ts:1-4`, `i18n.ts:83-86`, `i18n.ts:167-182`; [catalog management](docs/features/catalog-management.md)).
+
 ## Quick start for contributors
 
 ```bash

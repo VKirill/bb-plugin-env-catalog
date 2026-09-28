@@ -2,7 +2,7 @@
 title: Env Catalog Data Model
 type: data-model
 created: 2026-09-27
-updated: 2026-09-27
+updated: 2026-09-28
 status: active
 confidence: high
 tags: [data-model, sqlite, credentials]

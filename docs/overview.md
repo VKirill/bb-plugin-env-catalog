@@ -2,7 +2,7 @@
 title: Env Catalog Overview
 type: overview
 created: 2026-09-27
-updated: 2026-09-27
+updated: 2026-09-28
 status: active
 confidence: medium
 tags: [bb-plugin, credentials, overview]
@@ -12,6 +12,7 @@ sources:
   - app.tsx
   - kinds.ts
   - contracts.ts
+  - i18n.ts
   - tsconfig.json
 ---
 
@@ -23,7 +24,7 @@ TL;DR: Env Catalog is a BB plugin that stores named credentials in the BB server
 
 The catalog stores four credential kinds: plain secret values, FTP/FTPS/SFTP access, SSH access, and site logins (`kinds.ts:3-6`, `kinds.ts:13-37`). Structured access is packed into the encrypted value, while name, service, description, tags, and timestamps occupy separate columns (`kinds.ts:57-78`, `server.ts:202-210`).
 
-BB provides three main access surfaces. The UI offers search, view, edit, delete, import, export, and machine-environment import (`app.tsx:408-547`). Registered agent tools list, retrieve, save, delete, and request credentials (`server.ts:601-959`). The `bb env-catalog` command group exposes corresponding terminal operations (`server.ts:966-1087`).
+BB provides three main access surfaces. The UI offers search, view, edit, delete, import, export, and machine-environment import (`app.tsx:408-547`). Its text is English by default and switches to Russian when `document.documentElement.lang` starts with `ru` (`i18n.ts:1-4`, `i18n.ts:83-86`, `i18n.ts:167-182`). Registered agent tools list, retrieve, save, delete, and request credentials (`server.ts:601-959`). The `bb env-catalog` command group exposes corresponding terminal operations (`server.ts:966-1087`).
 
 ## Stack
 

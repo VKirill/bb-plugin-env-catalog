@@ -2,7 +2,7 @@
 title: Env Catalog Gotchas
 type: gotchas
 created: 2026-09-27
-updated: 2026-09-28
+updated: 2026-10-01
 status: active
 confidence: high
 tags: [gotchas, credentials, data-integrity]

@@ -2,7 +2,7 @@
 title: Env Catalog API and Commands
 type: component
 created: 2026-09-27
-updated: 2026-09-27
+updated: 2026-10-01
 status: active
 confidence: medium
 tags: [api, rpc, cli, agent-tools]
@@ -29,6 +29,23 @@ This page catalogs the plugin's callable interfaces. The source registers BB RPC
 3. The React app calls RPC through `useRpc` and subscribes to `env-catalog:changed` events (`app.tsx:366-394`).
 4. The server separately registers agent tools and a CLI command group (`server.ts:601-959`, `server.ts:1046-1087`).
 
+### Plugin initialization (`plugin`)
+
+1. BB calls the default-exported async `plugin` function. It logs startup, chooses `bb.server.experimental_dataDir` when set or falls back to `$HOME/.bb` (using `~/.bb` when `HOME` is unset), then creates the `plugins/env-catalog` directory recursively (`server.ts:152-160`).
+2. It reads `master.key` if present. Exactly 32 bytes are reused; a different length is replaced with 32 random bytes. If the file is absent, a new 32-byte key is generated. Both write paths request mode `0600` (`server.ts:162-173`).
+3. The nested `encrypt` function stores AES-256-GCM output as base64 IV, authentication tag, and ciphertext separated by colons. `decrypt` returns values unchanged when they do not have three colon-separated parts; otherwise it decrypts with the loaded key (`server.ts:175-196`).
+4. The server obtains BB's plugin database and migrates the `env_variables` table plus the `service` index (`server.ts:199-212`).
+5. It inspects the table columns and adds `kind TEXT NOT NULL DEFAULT 'secret'` only when that column is missing (`server.ts:214-221`).
+
+| Initialization branch | Condition | Outcome | Failure behavior |
+|---|---|---|---|
+| Data directory | BB supplies `experimental_dataDir`, or it is absent. | Uses the supplied directory, or the home-directory fallback, then creates `plugins/env-catalog` (`server.ts:155-160`). | Directory creation errors escape initialization; there is no local catch in this path (`server.ts:152-160`). |
+| Master key | `master.key` exists and has 32 bytes. | Reads and reuses that key (`server.ts:162-166`). | File read errors escape initialization (`server.ts:162-166`). |
+| Master key | File is absent or has a length other than 32 bytes. | Generates a 32-byte key and writes it with requested mode `0600` (`server.ts:166-173`). | Write errors escape initialization. Replacing a malformed key leaves existing ciphertext without its former key (`server.ts:166-173`, `server.ts:184-196`). |
+| `kind` column | Column is present or absent after the table migration. | Leaves it intact when present; otherwise adds it with default `secret` for existing rows (`server.ts:214-221`). | Database inspection or alteration errors escape initialization (`server.ts:214-221`). |
+
+The directory, key-file, database, and migration operations have no startup-level catch, so their thrown errors reject `plugin` initialization (`server.ts:152-221`).
+
 ### `rpcContract` branches, outcomes, and failures
 
 The contract assigns a Zod input and output shape to each RPC name. Optional filters and save metadata accept omitted or null values where declared; the handler for each name supplies its result (`server.ts:56-128`, `server.ts:562-599`).
@@ -39,7 +56,7 @@ The contract assigns a Zod input and output shape to each RPC name. Optional fil
 | `env_get_value` | Requires a string `name`. | Returns name, kind, value/access, reveal text, and metadata; a missing name throws a not-found error (`server.ts:66-80`, `server.ts:566-580`). |
 | `env_save` | Requires a trimmed non-empty name; kind, value, access, description, service, and tags are optional/nullable. | Saves or replaces the named record and returns success/name. Empty credential values or invalid structured access fail in the save path (`server.ts:81-95`, `server.ts:311-350`, `kinds.ts:57-103`). |
 | `env_delete` | Requires a string `name`. | Returns `success: true` if a row was deleted and `false` if no row matched; missing rows do not throw (`server.ts:96-103`, `server.ts:355-363`, `server.ts:586-589`). |
-| `env_export` | `format` must be `env` or `json`. | Returns serialized content; decryption/serialization errors propagate from the handler (`server.ts:104-111`, `server.ts:366-405`, `server.ts:590-592`). |
+| `env_export` | `format` must be `env` or `json`. | Returns serialized content. If AES-GCM decryption throws, `exportAll` and the RPC handler do not catch the exception (`server.ts:184-196`, `server.ts:366-405`, `server.ts:590-592`). |
 | `env_import` | Requires content and format `env` or `json`; `overwrite` defaults to `true`. | Returns imported count. Invalid JSON throws an invalid-format error; unsupported or invalid rows are skipped according to the import path (`server.ts:112-120`, `server.ts:408-491`, `server.ts:593-595`). |
 | `env_import_machine_env` | Input is `null`. | Returns imported count; missing source files or an invalid key encoding yield zero, and individual decryption failures are logged and skipped (`server.ts:122-127`, `server.ts:493-559`, `server.ts:596-598`). |
 

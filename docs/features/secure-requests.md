@@ -2,7 +2,7 @@
 title: Secure Credential Requests
 type: component
 created: 2026-09-27
-updated: 2026-09-28
+updated: 2026-10-01
 status: active
 confidence: medium
 tags: [credentials, requests, pending-interaction]
@@ -21,6 +21,8 @@ TL;DR: The `env_request` agent tool or CLI `request` command asks BB to render a
 ## Purpose
 
 The request flow collects credentials through a BB in-thread form associated with `env-catalog-request`, instead of receiving the values as ordinary tool arguments (`contracts.ts:70`, `server.ts:786-830`).
+
+For each requested field, the renderer reuses `KindFields`; names are locked and the fields shown depend on the requested kind. The field definitions are documented in [Catalog management](catalog-management.md#credential-modes) (`app.tsx:165-363`, `app.tsx:1000-1009`).
 
 The renderer uses the shared translated labels; locale selection is described in [Catalog management](catalog-management.md) (`app.tsx:917-924`, `app.tsx:995-1023`, `i18n.ts:170-182`).
 

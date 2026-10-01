@@ -2,7 +2,7 @@
 title: Credential Import and Export
 type: component
 created: 2026-09-27
-updated: 2026-09-28
+updated: 2026-10-01
 status: active
 confidence: medium
 tags: [credentials, import, export]

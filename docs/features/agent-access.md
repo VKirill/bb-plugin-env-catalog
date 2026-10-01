@@ -2,7 +2,7 @@
 title: Agent Access to Credentials
 type: component
 created: 2026-09-27
-updated: 2026-09-28
+updated: 2026-10-01
 status: active
 confidence: high
 tags: [agents, credentials, bb-tools]

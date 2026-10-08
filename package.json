@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-env-catalog",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "type": "module",
   "engines": {
     "bb": ">=0.43",
@@ -69,7 +69,7 @@
     "typecheck": "tsc --noEmit",
     "build": "bb plugin build",
     "check": "npm run typecheck && npm test && npm run build",
-    "test": "node --experimental-strip-types --test lib/*.test.ts"
+    "test": "node --experimental-strip-types --import ./lib/ts-resolve.mjs --test lib/*.test.ts"
   },
   "vk": {
     "rpcCallerPolicy": true

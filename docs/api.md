@@ -74,6 +74,10 @@ Zod rejects payloads that do not match an operation's declared shape. Errors rai
 | `env_import` | RPC `env_import` | Plugin UI | Import `env` or `json` content; overwrite defaults to true. | BB RPC host context; no plugin-specific user check in handler (`server.ts:112-120`, `server.ts:593-595`). |
 | `env_import_machine_env` | RPC `env_import_machine_env` | Plugin UI | Import values from BB Machine Environment. | BB RPC host context; no plugin-specific user check in handler (`server.ts:122-127`, `server.ts:596-598`). |
 
+### Grant RPCs (0.3.2, owner only)
+
+`grant_list`, `grant_decide`, `grant_create`, `grant_revoke`, `journal_list`: see [Agent Grants and Issuance Journal](features/agent-grants.md). The `env_get` tool takes an optional `purpose` and goes through the grant flow; `bb env-catalog get` from an agent session does too (`--purpose <text>`).
+
 ### Agent tools
 
 | Method | Path / tool | Caller | Purpose | Auth |

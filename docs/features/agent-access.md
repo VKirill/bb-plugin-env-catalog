@@ -2,7 +2,7 @@
 title: Agent Access to Credentials
 type: component
 created: 2026-09-27
-updated: 2026-10-01
+updated: 2026-10-08
 status: active
 confidence: high
 tags: [agents, credentials, bb-tools]
@@ -25,7 +25,7 @@ The plugin adds tools to the BB agent runtime so an agent can find a named crede
 
 1. During plugin startup, the server registers tools with BB through `bb.agents.registerTool` (`server.ts:601-959`).
 2. `env_list` filters summaries by text or kind and returns names, metadata, timestamps, and masked summaries without raw values (`server.ts:636-667`).
-3. `env_get` looks up an exact name and returns the decrypted secret or structured access; missing entries return `found: false` with guidance to list keys (`server.ts:602-634`).
+3. `env_get` looks up an exact name and returns the decrypted secret or structured access **only with the owner's grant** for the thread or project; with none the owner gets a form and the call waits up to 10 minutes (0.3.2, [agent-grants](agent-grants.md)). Missing entries return `found: false` with guidance to list keys.
 4. `env_set` builds structured access from flat fields when needed, then calls the common save function (`server.ts:669-752`).
 5. `env_delete` removes the named record and reports whether it existed (`server.ts:754-785`).
 6. `env_request` asks BB to show the pending-interaction form and persists the submitted values only after completion (`server.ts:861-959`).

@@ -4,7 +4,13 @@ import { join } from "node:path";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import Database from "better-sqlite3";
 import { z } from "zod";
-import { ENV_REQUEST_RENDERER_ID, envRequestResponseSchema } from "./contracts.js";
+import {
+  ENV_GRANT_RENDERER_ID,
+  ENV_REQUEST_RENDERER_ID,
+  envGrantDecisionSchema,
+  envRequestResponseSchema,
+  type EnvGrantPayload,
+} from "./contracts.js";
 import {
   accessFromFlat,
   credentialKindSchema,
@@ -15,7 +21,8 @@ import {
   unpackStoredValue,
   type CredentialKind,
 } from "./kinds.js";
-import { callerRefusal, readVkCaller, type GuardedMethod } from "./lib/rpc-caller.js";
+import { GRANT_MIGRATIONS, createGrantStore, type GrantRequest } from "./lib/grants.js";
+import { callerRefusal, readVkCaller, type GuardedMethod, type VkCaller } from "./lib/rpc-caller.js";
 
 export interface EnvRecord {
   name: string;
@@ -53,6 +60,43 @@ const summarySchema = z.object({
 });
 
 const accessSchema = z.record(z.string(), z.unknown()).nullable().optional();
+
+const grantSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  scope: z.enum(["thread", "project"]),
+  scopeId: z.string(),
+  label: z.string().nullable(),
+  grantedAt: z.string(),
+  grantedBy: z.string().nullable(),
+});
+
+const pendingGrantSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  threadId: z.string(),
+  threadTitle: z.string().nullable(),
+  projectId: z.string().nullable(),
+  projectName: z.string().nullable(),
+  purpose: z.string().nullable(),
+  source: z.string().nullable(),
+  createdAt: z.string(),
+});
+
+const journalEntrySchema = z.object({
+  id: z.number(),
+  at: z.string(),
+  name: z.string(),
+  outcome: z.enum(["issued", "denied", "timeout", "cancelled"]),
+  via: z.string().nullable(),
+  grantKind: z.string().nullable(),
+  threadId: z.string().nullable(),
+  threadTitle: z.string().nullable(),
+  projectId: z.string().nullable(),
+  projectName: z.string().nullable(),
+  purpose: z.string().nullable(),
+  caller: z.string().nullable(),
+});
 
 export const rpcContract = defineRpcContract({
   env_list: {
@@ -125,6 +169,38 @@ export const rpcContract = defineRpcContract({
     output: z.object({
       importedCount: z.number(),
     }),
+  },
+  // Grants (owner only; the page lists and revokes, the grant form answers).
+  grant_list: {
+    input: z.null(),
+    output: z.object({
+      grants: z.array(grantSchema),
+      pending: z.array(pendingGrantSchema),
+    }),
+  },
+  grant_decide: {
+    input: z.object({ requestId: z.string(), decision: envGrantDecisionSchema }),
+    output: z.object({ status: z.string() }),
+  },
+  grant_create: {
+    input: z.object({
+      name: z.string().trim().min(1),
+      scope: z.enum(["thread", "project"]),
+      scopeId: z.string().trim().min(1),
+      label: z.string().nullable().optional(),
+    }),
+    output: z.object({ grant: grantSchema }),
+  },
+  grant_revoke: {
+    input: z.object({ id: z.string() }),
+    output: z.object({ success: z.boolean() }),
+  },
+  journal_list: {
+    input: z.object({
+      limit: z.number().int().min(1).max(1000).nullable().optional(),
+      name: z.string().nullable().optional(),
+    }),
+    output: z.object({ entries: z.array(journalEntrySchema) }),
   },
 });
 
@@ -210,7 +286,11 @@ export default async function plugin(bb: BbPluginApi) {
       updated_at TEXT NOT NULL
     );`,
     `CREATE INDEX IF NOT EXISTS idx_env_service ON env_variables(service);`,
+    ...GRANT_MIGRATIONS,
   ]);
+  const grantStore = createGrantStore(db);
+  // No waiter survives a restart: close whatever was pending.
+  grantStore.expireAllPending();
 
   const columns = db
     .prepare("PRAGMA table_info(env_variables)")
@@ -359,6 +439,8 @@ export default async function plugin(bb: BbPluginApi) {
     const info = stmt.run(cleanName);
     const deleted = info.changes > 0;
     if (deleted) {
+      // A re-created name must not inherit the old grants.
+      grantStore.revokeByName(cleanName);
       bb.realtime.publish(ENV_CATALOG_CHANGED, { name: cleanName, action: "delete" });
     }
     return deleted;
@@ -559,6 +641,200 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
 
+  // ---- Agent access: grants, the owner's form, the issuance journal --------------------
+  // An agent gets a stored value only through a grant «name -> this thread / this project».
+  // No grant: the owner gets a form in the agent's thread and the call waits for the answer.
+  // The answer is trusted only when it was recorded through the owner-only grant_decide RPC
+  // (lib/rpc-caller.ts), never from the form's submit value: a forged interaction response
+  // creates no grant, and once core checks the caller of interactions/respond as well, both
+  // doors need the verified owner.
+  const GRANT_WAIT_MS = 10 * 60 * 1000;
+
+  interface ThreadInfo {
+    title: string | null;
+    projectId: string | null;
+    projectName: string | null;
+  }
+
+  async function threadInfo(threadId: string, knownProjectId?: string | null): Promise<ThreadInfo> {
+    const info: ThreadInfo = { title: null, projectId: knownProjectId ?? null, projectName: null };
+    try {
+      const thread = await bb.sdk.threads.get({ threadId, signal: AbortSignal.timeout(3000) });
+      info.title = thread.title ?? thread.titleFallback ?? null;
+      info.projectId = info.projectId ?? thread.projectId ?? null;
+    } catch (err) {
+      bb.log.warn(`grant: thread lookup failed for ${threadId}: ${String(err)}`);
+    }
+    if (info.projectId) {
+      try {
+        const project = (await bb.sdk.projects.get({
+          projectId: info.projectId,
+          signal: AbortSignal.timeout(3000),
+        })) as { name?: string | null };
+        info.projectName = project.name ?? null;
+      } catch {
+        // The id alone is enough.
+      }
+    }
+    return info;
+  }
+
+  type AgentRead =
+    | { ok: true; record: EnvRecord; grantKind: string }
+    | { ok: false; code: "not_found" | "denied" | "timeout" | "unavailable"; message: string };
+
+  const decidedWaiters = new Map<string, () => void>();
+  const inflight = new Map<string, Promise<AgentRead>>();
+
+  const DENIED_TEXT = (name: string) =>
+    `The owner declined to give ${name} to this thread. Do not retry and do not look for another route to the value ` +
+    `(no files, no other threads). Tell the owner what you could not do and why you need ${name}.`;
+  const NO_ANSWER_TEXT = (name: string, why: string) =>
+    `No answer from the owner about ${name} (${why}). The grant was NOT given. Call env_get again when the owner is available ` +
+    `(a new form is posted each time), or finish the parts of the task that do not need it and report this.`;
+
+  async function readForAgent(options: {
+    name: string;
+    threadId: string;
+    projectId?: string | null;
+    via: "tool" | "cli";
+    purpose?: string | null;
+    signal?: AbortSignal;
+    caller?: string;
+  }): Promise<AgentRead> {
+    const name = options.name.trim();
+    const record = await getVariable(name);
+    if (!record) {
+      return {
+        ok: false,
+        code: "not_found",
+        message: `Variable '${name}' is not found in Env Catalog. Call env_list to see available names, or env_request to have the owner add it.`,
+      };
+    }
+    const info = await threadInfo(options.threadId, options.projectId);
+    const base = {
+      name,
+      via: options.via,
+      threadId: options.threadId,
+      threadTitle: info.title,
+      projectId: info.projectId,
+      projectName: info.projectName,
+      purpose: options.purpose ?? null,
+      caller: options.caller ?? null,
+    };
+    const grant = grantStore.findGrant(name, options.threadId, info.projectId);
+    if (grant) {
+      grantStore.addJournal({ ...base, outcome: "issued", grantKind: grant.scope });
+      return { ok: true, record, grantKind: grant.scope };
+    }
+
+    const key = `${name}\u0000${options.threadId}`;
+    let waiting = inflight.get(key);
+    if (!waiting) {
+      waiting = askOwner(record, info, options).finally(() => inflight.delete(key));
+      inflight.set(key, waiting);
+    }
+    const outcome = await waiting;
+    if (outcome.ok) {
+      grantStore.addJournal({ ...base, outcome: "issued", grantKind: outcome.grantKind });
+    } else if (outcome.code === "denied") {
+      grantStore.addJournal({ ...base, outcome: "denied" });
+    } else if (outcome.code === "timeout") {
+      grantStore.addJournal({ ...base, outcome: "timeout" });
+    }
+    return outcome;
+  }
+
+  async function askOwner(
+    record: EnvRecord,
+    info: ThreadInfo,
+    options: { name: string; threadId: string; via: string; purpose?: string | null; signal?: AbortSignal },
+  ): Promise<AgentRead> {
+    const name = record.name;
+    const request = grantStore.createRequest({
+      name,
+      threadId: options.threadId,
+      projectId: info.projectId,
+      threadTitle: info.title,
+      projectName: info.projectName,
+      purpose: options.purpose,
+      source: options.via,
+    });
+    bb.realtime.publish(ENV_CATALOG_CHANGED, { action: "grant-request", name });
+
+    const payload: EnvGrantPayload = {
+      requestId: request.id,
+      name,
+      kind: record.kind,
+      threadId: options.threadId,
+      threadTitle: info.title,
+      projectId: info.projectId,
+      projectName: info.projectName,
+      purpose: options.purpose ?? null,
+      source: options.via,
+    };
+    // The owner may also answer on the Env Catalog page: that closes the form here.
+    const dismiss = new AbortController();
+    const decidedOnPage = new Promise<void>((resolve) => decidedWaiters.set(request.id, resolve));
+    const signals = [dismiss.signal, ...(options.signal ? [options.signal] : [])];
+    let reason = "form closed";
+    let formError: unknown = null;
+    try {
+      const shown = bb.ui
+        .requestInput(
+          {
+            threadId: options.threadId,
+            rendererId: ENV_GRANT_RENDERER_ID,
+            title: `Выдать ${name} треду «${info.title ?? options.threadId}»?`,
+            payload: payload as unknown as import("@get-bb/plugin-sdk").JsonValue,
+            timeoutMs: GRANT_WAIT_MS,
+          },
+          { signal: AbortSignal.any(signals) },
+        )
+        .then((result) => {
+          if (result.outcome === "cancelled") reason = result.reason;
+        })
+        .catch((err: unknown) => {
+          formError = err;
+        });
+      await Promise.race([shown, decidedOnPage]);
+    } finally {
+      decidedWaiters.delete(request.id);
+      dismiss.abort();
+    }
+
+    if (formError !== null && grantStore.getRequest(request.id)?.status === "pending") {
+      grantStore.expireRequest(request.id);
+      const detail = formError instanceof Error ? formError.message : String(formError);
+      bb.log.warn(`grant: form for ${name} in ${options.threadId} failed: ${detail}`);
+      return {
+        ok: false,
+        code: "unavailable",
+        message:
+          `Could not post the grant form to the owner (${detail}). ` +
+          `Tell the owner they can answer on the Env Catalog page, or give ${name} to this thread there, then call env_get again.`,
+      };
+    }
+    const row = grantStore.getRequest(request.id);
+    if (row?.status === "deny") return { ok: false, code: "denied", message: DENIED_TEXT(name) };
+    if (row?.status === "thread" || row?.status === "project") {
+      return { ok: true, record, grantKind: row.status };
+    }
+    if (row?.status === "once") {
+      if (grantStore.consumeOnce(row.id)) return { ok: true, record, grantKind: "once" };
+      return { ok: false, code: "timeout", message: NO_ANSWER_TEXT(name, "the one-time answer was already used") };
+    }
+    // Still pending: the form closed (timeout, stopped thread, dismissed) or was answered by a
+    // forged interaction response that never went through grant_decide: no grant either way.
+    grantStore.expireRequest(request.id);
+    return { ok: false, code: "timeout", message: NO_ANSWER_TEXT(name, reason) };
+  }
+
+  function summarizeCaller(caller: VkCaller | undefined): string | null {
+    if (!caller) return null;
+    return caller.pluginId ? `${caller.kind}:${caller.pluginId}` : caller.kind;
+  }
+
   // Register RPC Handlers for Frontend UI. The methods that read, change or move secrets
   // accept only the owner's app and CLI (lib/rpc-caller.ts); env_list stays open (names and masks).
   const guardRpc = (ctx: unknown, method: GuardedMethod): void => {
@@ -577,6 +853,17 @@ export default async function plugin(bb: BbPluginApi) {
       const record = await getVariable(name);
       if (!record) {
         throw new Error(`Secret '${name}' not found.`);
+      }
+      // Another plugin (Lane Pilot checks, Image Studio keys) reads on its own authority: journal it.
+      const rpcCaller = readVkCaller(ctx);
+      if (rpcCaller?.kind === "plugin") {
+        grantStore.addJournal({
+          name: record.name,
+          outcome: "issued",
+          via: "plugin",
+          grantKind: "plugin",
+          caller: summarizeCaller(rpcCaller),
+        });
       }
       return {
         name: record.name,
@@ -611,6 +898,56 @@ export default async function plugin(bb: BbPluginApi) {
       guardRpc(ctx, "env_import_machine_env");
       return { importedCount: await importFromMachineEnvironment() };
     },
+    grant_list: async (_input, ctx?: unknown) => {
+      guardRpc(ctx, "grant_list");
+      return {
+        grants: grantStore.listGrants(),
+        pending: grantStore.listPendingRequests().map((r) => ({
+          id: r.id,
+          name: r.name,
+          threadId: r.threadId,
+          threadTitle: r.threadTitle,
+          projectId: r.projectId,
+          projectName: r.projectName,
+          purpose: r.purpose,
+          source: r.source,
+          createdAt: r.createdAt,
+        })),
+      };
+    },
+    grant_decide: async ({ requestId, decision }, ctx?: unknown) => {
+      guardRpc(ctx, "grant_decide");
+      const caller = readVkCaller(ctx);
+      const after = grantStore.decideRequest(requestId, decision, summarizeCaller(caller) ?? "owner");
+      if (after === null) throw new Error("Grant request not found (it may have expired).");
+      // Wake the waiting tool call; the form closes with it.
+      decidedWaiters.get(requestId)?.();
+      bb.realtime.publish(ENV_CATALOG_CHANGED, { action: "grant-decided", name: after.name });
+      return { status: after.status };
+    },
+    grant_create: async ({ name, scope, scopeId, label }, ctx?: unknown) => {
+      guardRpc(ctx, "grant_create");
+      if (!(await getVariable(name))) throw new Error(`Secret '${name}' not found.`);
+      const grant = grantStore.addGrant({
+        name,
+        scope,
+        scopeId,
+        label,
+        grantedBy: summarizeCaller(readVkCaller(ctx)) ?? "owner",
+      });
+      bb.realtime.publish(ENV_CATALOG_CHANGED, { action: "grant-created", name: grant.name });
+      return { grant };
+    },
+    grant_revoke: async ({ id }, ctx?: unknown) => {
+      guardRpc(ctx, "grant_revoke");
+      const success = grantStore.revokeGrant(id);
+      if (success) bb.realtime.publish(ENV_CATALOG_CHANGED, { action: "grant-revoked" });
+      return { success };
+    },
+    journal_list: async ({ limit, name }, ctx?: unknown) => {
+      guardRpc(ctx, "journal_list");
+      return { entries: grantStore.listJournal(limit ?? 200, name) };
+    },
   });
 
   // The tools that change the catalog refuse an agent (audit 2026-10-08 round 4, P0-6):
@@ -626,27 +963,52 @@ export default async function plugin(bb: BbPluginApi) {
   bb.agents.registerTool({
     name: "env_get",
     description:
-      "Retrieve a credential from Env Catalog by exact name: API key, FTP/SFTP account, SSH key, or site login. Do not echo the secret in chat.",
+      "Retrieve a credential from Env Catalog by exact name: API key, FTP/SFTP account, SSH key, or site login. Needs the owner's grant for this thread or project: without one the owner gets a form by itself and this call WAITS (up to 10 minutes) for the answer. Do not echo the secret in chat; never copy it to a file.",
     parameters: z.object({
       name: z.string().describe("Exact name of the variable (e.g. OPENAI_API_KEY, TAVILY_API_KEY)"),
+      purpose: z
+        .string()
+        .optional()
+        .describe("One short sentence: what you need it for (shown to the owner in the grant form and written to the journal)"),
     }),
     presentation: {
       label: {
-        pending: "Reading secret from Env Catalog",
+        pending: "Reading secret from Env Catalog (waits for the owner if no grant)",
         completed: "Read secret from Env Catalog",
       },
     },
-    async execute({ name }) {
-      const item = await getVariable(name);
-      if (!item) {
+    async execute({ name, purpose }, ctx) {
+      const threadId = ctx?.threadId || process.env.BB_THREAD_ID;
+      if (!threadId) {
         return JSON.stringify({
           found: false,
           name,
-          message: `Variable '${name}' is not found in Env Catalog. Call 'env_list' to see available keys.`,
+          message: "Cannot hand out a credential without a thread context (the owner's grant is per thread/project).",
         });
       }
+      const read = await readForAgent({
+        name,
+        threadId,
+        projectId: ctx?.projectId,
+        via: "tool",
+        purpose,
+        signal: ctx?.signal,
+        caller: "agent-thread",
+      });
+      if (!read.ok) {
+        return JSON.stringify({
+          found: read.code !== "not_found",
+          granted: false,
+          name,
+          reason: read.code,
+          message: read.message,
+        });
+      }
+      const item = read.record;
       return JSON.stringify({
         found: true,
+        granted: true,
+        grant: read.grantKind,
         name: item.name,
         kind: item.kind,
         value: item.value,
@@ -991,7 +1353,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   // Dynamic Instructions for Agents
   bb.agents.contributeInstructions(() => {
-    return "Env Catalog is active. It stores API keys, FTP/FTPS/SFTP accounts, SSH private keys, and site logins encrypted on the BB server for every enrolled machine. Before asking the user: env_list (optional query or kind=secret|ftp|ssh|login), then env_get with the exact name. env_get returns value and/or access fields (host, username, password, privateKey). Do not repeat secrets in chat. If access is missing, env_request with name and kind — never ask the user to paste credentials into the thread. Agents cannot save or delete credentials: env_set and env_delete refuse; for new credentials use env_request (the owner enters them in a masked form). File Gateway FTP is only for browsing site files in BB; use Env Catalog when a script, SSH session, or API call needs the credential.";
+    return "Env Catalog is active. It stores API keys, FTP/FTPS/SFTP accounts, SSH private keys, and site logins encrypted on the BB server for every enrolled machine. Before asking the user: env_list (optional query or kind=secret|ftp|ssh|login), then env_get with the exact name. env_get returns value and/or access fields (host, username, password, privateKey) once the owner has granted the name to this thread or project: with no grant the owner gets a form by itself and the call waits for the answer (up to 10 minutes). Never copy a value into a file (~/.config/..., .env in a repo): ask through env_get each time, the grant is remembered. Do not repeat secrets in chat. If access is missing, env_request with name and kind — never ask the user to paste credentials into the thread. Agents cannot save or delete credentials: env_set and env_delete refuse; for new credentials use env_request (the owner enters them in a masked form). File Gateway FTP is only for browsing site files in BB; use Env Catalog when a script, SSH session, or API call needs the credential.";
   });
 
   // CLI Command Registration
@@ -1000,7 +1362,7 @@ export default async function plugin(bb: BbPluginApi) {
     "",
     "Usage:",
     "  bb env-catalog list [--query <text>] [--kind secret|ftp|ssh|login] [--json]",
-    "  bb env-catalog get <NAME> [--raw]",
+    "  bb env-catalog get <NAME> [--raw] [--purpose <text>]",
     "  bb env-catalog set <NAME> <VALUE> [--desc <text>] [--service <text>]",
     "  bb env-catalog set <NAME> --kind ftp --host <h> --user <u> --password <p> [--protocol ftp|ftps|sftp] [--port <n>] [--root <path>] [--fingerprint <hex>]",
     "  bb env-catalog set <NAME> --kind ssh --host <h> --user <u> --private-key <pem> [--port 22] [--passphrase <p>] [--fingerprint <hex>]",
@@ -1085,8 +1447,8 @@ export default async function plugin(bb: BbPluginApi) {
       },
       {
         name: "get",
-        summary: "Get decrypted value of a secret",
-        usage: "bb env-catalog get <NAME> [--raw]",
+        summary: "Get decrypted value of a secret (an agent session needs the owner's grant: the owner gets a form and the call waits)",
+        usage: "bb env-catalog get <NAME> [--raw] [--purpose <text>]",
       },
       {
         name: "set",
@@ -1142,6 +1504,32 @@ export default async function plugin(bb: BbPluginApi) {
         "import-machine-env": "cli_import_machine_env",
       };
       const guarded = command === undefined ? undefined : cliGuard[command];
+      // `get` from an agent session is not a refusal: it goes through the same grant flow as
+      // the env_get tool (grant check, owner form, journal).
+      const cliCaller = readVkCaller(ctx);
+      if (command === "get" && cliCaller?.kind === "agent-thread") {
+        const name = args[0];
+        if (!name) return error("Variable name required: bb env-catalog get <NAME> --raw");
+        const threadId = cliCaller.threadId ?? ctx.threadId;
+        if (!threadId) return error(callerRefusal(cliCaller, "cli_get") ?? "Refused.");
+        const pIdx = args.indexOf("--purpose");
+        const read = await readForAgent({
+          name,
+          threadId,
+          projectId: ctx.projectId,
+          via: "cli",
+          purpose: pIdx !== -1 ? (args[pIdx + 1] ?? null) : null,
+          signal: ctx.signal,
+          caller: "agent-thread",
+        });
+        if (!read.ok) return error(read.message);
+        const item = read.record;
+        const printable =
+          item.kind === "secret" ? (item.value ?? "") : JSON.stringify(item.access, null, 2);
+        return raw
+          ? { exitCode: 0, stdout: printable }
+          : reply(item, `${item.name} (${item.kind})\n${printable}`);
+      }
       if (guarded !== undefined) {
         const refusal = callerRefusal(readVkCaller(ctx), guarded);
         if (refusal !== null) {

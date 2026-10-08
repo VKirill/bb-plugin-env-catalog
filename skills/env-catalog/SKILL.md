@@ -88,6 +88,8 @@ Only when the owner asked to remove this entry.
 
 ## CLI
 
+On a VK core, `get`, `set`, `delete`, `export` and `import-machine-env` run only for the owner's own terminal and the Env Catalog page; inside an agent session the CLI answers "Refused" and agents use the tools above (`env_get`, `env_set`, `env_delete`, `env_request`). `list` and `request` work everywhere.
+
 ```bash
 bb env-catalog list [--kind ssh]
 bb env-catalog get OVH_SSH --raw          # prints the secret: terminal only, never in a Lane Pilot thread

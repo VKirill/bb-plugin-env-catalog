@@ -15,6 +15,7 @@ import {
   unpackStoredValue,
   type CredentialKind,
 } from "./kinds.js";
+import { callerRefusal, readVkCaller, type GuardedMethod } from "./lib/rpc-caller.js";
 
 export interface EnvRecord {
   name: string;
@@ -558,12 +559,21 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
 
-  // Register RPC Handlers for Frontend UI
+  // Register RPC Handlers for Frontend UI. The methods that read, change or move secrets
+  // accept only the owner's app and CLI (lib/rpc-caller.ts); env_list stays open (names and masks).
+  const guardRpc = (ctx: unknown, method: GuardedMethod): void => {
+    const refusal = callerRefusal(readVkCaller(ctx), method);
+    if (refusal !== null) {
+      bb.log.warn(`rpc ${method} refused: caller ${readVkCaller(ctx)?.kind ?? "?"}`);
+      throw new Error(refusal);
+    }
+  };
   bb.rpc.register(rpcContract, {
     env_list: async ({ query, kind }) => ({
       variables: await listSummaries(query, kind),
     }),
-    env_get_value: async ({ name }) => {
+    env_get_value: async ({ name }, ctx?: unknown) => {
+      guardRpc(ctx, "env_get_value");
       const record = await getVariable(name);
       if (!record) {
         throw new Error(`Secret '${name}' not found.`);
@@ -579,23 +589,28 @@ export default async function plugin(bb: BbPluginApi) {
         tags: record.tags ?? null,
       };
     },
-    env_save: async (params) => {
+    env_save: async (params, ctx?: unknown) => {
+      guardRpc(ctx, "env_save");
       await saveVariable(params);
       return { success: true, name: params.name.trim() };
     },
-    env_delete: async ({ name }) => {
+    env_delete: async ({ name }, ctx?: unknown) => {
+      guardRpc(ctx, "env_delete");
       const success = await deleteVariable(name);
       return { success };
     },
-    env_export: async ({ format }) => ({
-      content: await exportAll(format),
-    }),
-    env_import: async ({ content, format, overwrite }) => ({
-      importedCount: await importContent(content, format, overwrite),
-    }),
-    env_import_machine_env: async () => ({
-      importedCount: await importFromMachineEnvironment(),
-    }),
+    env_export: async ({ format }, ctx?: unknown) => {
+      guardRpc(ctx, "env_export");
+      return { content: await exportAll(format) };
+    },
+    env_import: async ({ content, format, overwrite }, ctx?: unknown) => {
+      guardRpc(ctx, "env_import");
+      return { importedCount: await importContent(content, format, overwrite) };
+    },
+    env_import_machine_env: async (_input, ctx?: unknown) => {
+      guardRpc(ctx, "env_import_machine_env");
+      return { importedCount: await importFromMachineEnvironment() };
+    },
   });
 
   // Register Agent Tools
@@ -1100,6 +1115,24 @@ export default async function plugin(bb: BbPluginApi) {
         exitCode: 1,
         stderr: msg,
       });
+
+      // Reading, changing or moving secrets from the CLI is the owner's: the shell of an
+      // agent session is marked agent-thread by core. list, request and help stay open.
+      const cliGuard: Partial<Record<string, GuardedMethod>> = {
+        get: "cli_get",
+        set: "cli_set",
+        delete: "cli_delete",
+        export: "cli_export",
+        "import-machine-env": "cli_import_machine_env",
+      };
+      const guarded = command === undefined ? undefined : cliGuard[command];
+      if (guarded !== undefined) {
+        const refusal = callerRefusal(readVkCaller(ctx), guarded);
+        if (refusal !== null) {
+          bb.log.warn(`cli ${command} refused: caller ${readVkCaller(ctx)?.kind ?? "?"}`);
+          return error(refusal);
+        }
+      }
 
       switch (command) {
         case undefined:

@@ -17,7 +17,7 @@ Built by Lane Pilot from page frontmatter.
 | [Env Catalog Decisions](decisions.md) | decisions | active | 2026-10-08 |
 | [Env Catalog Deployment](deployment.md) | deployment | active | 2026-09-27 |
 | [Agent Access to Credentials](features/agent-access.md) | component | active | 2026-10-01 |
-| [Agent Grants and Issuance Journal](features/agent-grants.md) | component | active | 2026-10-08 |
+| [Issuance Journal](features/issuance-journal.md) | component | active | 2026-10-08 |
 | [Credential Catalog Management](features/catalog-management.md) | component | active | 2026-10-01 |
 | [Credential Import and Export](features/import-export.md) | component | active | 2026-10-01 |
 | [Secure Credential Requests](features/secure-requests.md) | component | active | 2026-10-01 |

@@ -51,6 +51,10 @@ Stores one credential per name. `saveVariable` performs `INSERT OR REPLACE`; it 
 | `created_at` | Non-null | ISO timestamp assigned on first save; replacement preserves the prior value (`server.ts:320-334`). |
 | `updated_at` | Non-null | ISO timestamp assigned on each save (`server.ts:320-350`). |
 
+### `env_issuance_journal`
+
+Passive trace of agent reads, saves and deletes (never a value): time, name, outcome (`issued` / `saved` / `deleted`; 0.3.2 rows may also hold `denied` / `timeout` / `cancelled`), how (`tool` / `cli`), thread and project ids and names, the agent's optional purpose. See [Issuance Journal](features/issuance-journal.md). `env_grants` and `env_grant_requests` are left over from 0.3.2, empty and unused.
+
 ### Key and encrypted payload
 
 The AES-256 key is stored outside SQLite as `master.key` in the plugin storage directory. The file is created with mode `0600`; encryption uses a random 12-byte IV and stores the authentication tag alongside the ciphertext (`server.ts:155-196`).

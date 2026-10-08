@@ -11,9 +11,9 @@ All values are encrypted at rest using AES-256-GCM. Because data is stored in SQ
 The plugin equips every BB agent with native tools:
 - `env_request`: Opens a secure masked in-app modal in the thread to ask for missing credentials. Secrets are encrypted directly to the catalog without exposing them in chat transcripts.
 - `env_list`: Discovers available variable names and services while omitting raw values to preserve context tokens.
-- `env_get`: Retrieves a decrypted secret value on demand.
-- `env_set`: Refuses agents (unreleased); credentials are saved by the owner through `env_request` or the page.
-- `env_delete`: Refuses agents (unreleased); the owner deletes on the page.
+- `env_get`: Retrieves a decrypted secret value on demand, at once, with no approval step.
+- `env_set`: Saves or updates a credential (API key, FTP/SFTP, SSH, login), for example one the owner pasted into the chat.
+- `env_delete`: Deletes a credential.
 
 A lightweight system instruction is automatically provided to agents at the start of each session, ensuring they check the catalog before asking for credentials, and use `env_request` instead of asking the user to type secrets into plain chat.
 
@@ -23,6 +23,7 @@ Open **Env Catalog** in the BB left sidebar to inspect and manage your stored se
 - Search and filter keys by name, service tag, or note.
 - Masked display (`••••••••`) with one-click reveal and clipboard copy.
 - Clean modals for adding or editing credentials.
+- «Журнал выдачи»: who read, saved or deleted what, and from which thread (never the value).
 - One-click bulk export and import in standard `.env` format.
 - "Sync Machine Env" button to decrypt and migrate existing BB Machine Environment variables in one step.
 

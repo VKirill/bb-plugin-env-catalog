@@ -25,9 +25,9 @@ The plugin adds tools to the BB agent runtime so an agent can find a named crede
 
 1. During plugin startup, the server registers tools with BB through `bb.agents.registerTool` (`server.ts:601-959`).
 2. `env_list` filters summaries by text or kind and returns names, metadata, timestamps, and masked summaries without raw values (`server.ts:636-667`).
-3. `env_get` looks up an exact name and returns the decrypted secret or structured access **only with the owner's grant** for the thread or project; with none the owner gets a form and the call waits up to 10 minutes (0.3.2, [agent-grants](agent-grants.md)). Missing entries return `found: false` with guidance to list keys.
+3. `env_get` looks up an exact name and returns the decrypted secret or structured access **at once**, from any session: no grant, no form, no wait (decision 007). The call is written to the [issuance journal](issuance-journal.md). Missing entries return `found: false` with guidance to list keys.
 4. `env_set` builds structured access from flat fields when needed, then calls the common save function (`server.ts:669-752`).
-5. `env_delete` removes the named record and reports whether it existed (`server.ts:754-785`).
+5. `env_delete` removes the named record and reports whether it existed (`server.ts:754-785`). Agents may call `env_set` and `env_delete`; both are journalled.
 6. `env_request` asks BB to show the pending-interaction form and persists the submitted values only after completion (`server.ts:861-959`).
 
 ### Tool modes
@@ -35,7 +35,7 @@ The plugin adds tools to the BB agent runtime so an agent can find a named crede
 | Tool | Inputs | Output and behavior |
 |---|---|---|
 | `env_list` | Optional query and kind. | Matching metadata and masked values; raw credential data is omitted (`server.ts:636-667`). |
-| `env_get` | Exact name. | `found` flag and decrypted secret or access object; missing names return a message (`server.ts:602-634`). |
+| `env_get` | Exact name, optional `purpose` (journal). | `found` flag and decrypted secret or access object; missing names return a message (`server.ts:602-634`). |
 | `env_set` | Name plus secret value or structured fields. | Validates kind data and stores the credential (`server.ts:669-752`). |
 | `env_delete` | Exact name. | Deletes if found and returns success state (`server.ts:754-785`). |
 | `env_request` | Name(s), optional kind/service/purpose. | Opens secure form; cancellation reports a cancelled outcome, completion saves and returns names (`server.ts:861-959`). |

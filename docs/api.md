@@ -74,9 +74,9 @@ Zod rejects payloads that do not match an operation's declared shape. Errors rai
 | `env_import` | RPC `env_import` | Plugin UI | Import `env` or `json` content; overwrite defaults to true. | BB RPC host context; no plugin-specific user check in handler (`server.ts:112-120`, `server.ts:593-595`). |
 | `env_import_machine_env` | RPC `env_import_machine_env` | Plugin UI | Import values from BB Machine Environment. | BB RPC host context; no plugin-specific user check in handler (`server.ts:122-127`, `server.ts:596-598`). |
 
-### Grant RPCs (0.3.2, owner only)
+### Journal RPC
 
-`grant_list`, `grant_decide`, `grant_create`, `grant_revoke`, `journal_list`: see [Agent Grants and Issuance Journal](features/agent-grants.md). The `env_get` tool takes an optional `purpose` and goes through the grant flow; `bb env-catalog get` from an agent session does too (`--purpose <text>`).
+`journal_list {limit?, name?}`: see [Issuance Journal](features/issuance-journal.md). The `env_get` tool takes an optional `purpose` that is written to the journal; `bb env-catalog get` takes `--purpose <text>`. Every RPC, tool and CLI command works for any caller, an agent session included; the plugin does not depend on any caller mark and behaves the same on stock BB and on a VK core.
 
 ### Agent tools
 
@@ -84,8 +84,8 @@ Zod rejects payloads that do not match an operation's declared shape. Errors rai
 |---|---|---|---|---|
 | `env_list` | Agent tool `env_list` | BB agent | List masked summaries, optionally filtered. | BB agent tool runtime; plugin defines no additional permission predicate (`server.ts:636-667`). |
 | `env_get` | Agent tool `env_get` | BB agent | Retrieve decrypted secret or structured access by exact name. | BB agent tool runtime; plugin defines no additional permission predicate (`server.ts:602-634`). |
-| `env_set` | Agent tool `env_set` | BB agent | Save secret or structured access. | Refuses every agent call (`refuseAgentTool`, unreleased); nothing is saved. |
-| `env_delete` | Agent tool `env_delete` | BB agent | Delete a named record. | Refuses every agent call (`refuseAgentTool`, unreleased); nothing is deleted. |
+| `env_set` | Agent tool `env_set` | BB agent | Save secret or structured access. | Any agent; journalled. |
+| `env_delete` | Agent tool `env_delete` | BB agent | Delete a named record. | Any agent; journalled. |
 | `env_request` | Agent tool `env_request` | BB agent in active thread | Open a secure request form and save its completed response. | BB agent tool runtime plus required thread context (`server.ts:861-959`). |
 
 ### CLI commands

@@ -68,29 +68,3 @@ export const envRequestResponseSchema = z.object({
 export type EnvRequestResponse = z.infer<typeof envRequestResponseSchema>;
 
 export const ENV_REQUEST_RENDERER_ID = "env-catalog-request";
-
-// Grant form: an agent asked for a stored secret and no grant covers it.
-export const ENV_GRANT_RENDERER_ID = "env-catalog-grant";
-
-export const envGrantDecisionSchema = z.enum(["once", "thread", "project", "deny"]);
-export type EnvGrantDecision = z.infer<typeof envGrantDecisionSchema>;
-
-export const envGrantPayloadSchema = z.object({
-  requestId: z.string(),
-  name: z.string(),
-  kind: credentialKindSchema.optional(),
-  threadId: z.string(),
-  threadTitle: z.string().nullable().optional(),
-  projectId: z.string().nullable().optional(),
-  projectName: z.string().nullable().optional(),
-  purpose: z.string().nullable().optional(),
-  source: z.string().nullable().optional(),
-});
-export type EnvGrantPayload = z.infer<typeof envGrantPayloadSchema>;
-
-// The form's submit value. The server never trusts it: the answer counts only when the
-// form recorded it through the owner-only grant_decide RPC (the request row is the truth).
-export const envGrantResponseSchema = z.object({
-  requestId: z.string(),
-  decision: envGrantDecisionSchema,
-});

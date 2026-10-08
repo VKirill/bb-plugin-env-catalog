@@ -8,12 +8,9 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import type { rpcContract, EnvSummary } from "./server";
 import {
-  ENV_GRANT_RENDERER_ID,
   ENV_REQUEST_RENDERER_ID,
-  envGrantPayloadSchema,
   envRequestPayloadSchema,
   envRequestResponseSchema,
-  type EnvGrantDecision,
 } from "./contracts.js";
 import { t } from "./i18n";
 import {
@@ -778,7 +775,7 @@ function EnvCatalogPage() {
               </ul>
             </div>
           )}
-          <GrantsSection />
+          <JournalSection />
         </div>
       </div>
 
@@ -895,63 +892,28 @@ function EnvCatalogPage() {
   );
 }
 
-interface GrantListResult {
-  grants: Array<{ id: string; name: string; scope: "thread" | "project"; scopeId: string; label: string | null; grantedAt: string }>;
-  pending: Array<{ id: string; name: string; threadId: string; threadTitle: string | null; projectName: string | null; purpose: string | null; createdAt: string }>;
-}
-
-const OUTCOME_LABEL = {
+const OUTCOME_LABEL: Record<string, "journalIssued" | "journalSaved" | "journalDeleted" | "journalDenied" | "journalTimeout" | "journalCancelled"> = {
   issued: "journalIssued",
+  saved: "journalSaved",
+  deleted: "journalDeleted",
   denied: "journalDenied",
   timeout: "journalTimeout",
   cancelled: "journalCancelled",
-} as const;
+};
 
-function GrantButtons({
-  busy,
-  hasProject,
-  onPick,
-}: {
-  busy: boolean;
-  hasProject: boolean;
-  onPick: (decision: EnvGrantDecision) => void;
-}) {
-  return (
-    <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
-      <Button type="button" size="sm" disabled={busy} onClick={() => onPick("once")}>
-        {t("grantOnce")}
-      </Button>
-      <Button type="button" size="sm" variant="outline" disabled={busy || !hasProject} onClick={() => onPick("project")}>
-        {t("grantProject")}
-      </Button>
-      <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => onPick("thread")}>
-        {t("grantThread")}
-      </Button>
-      <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => onPick("deny")}>
-        {t("grantDeny")}
-      </Button>
-    </div>
-  );
-}
-
-// The owner's access view: pending questions (a fallback when the form is out of sight),
-// standing grants with revoke, and the issuance journal. Owner-only RPCs: when core refuses
-// the caller the error is shown instead of the lists.
-function GrantsSection() {
+// «Журнал выдачи»: who read, saved or deleted what, from which thread and when. Never the value.
+function JournalSection() {
   const rpc = useRpc<typeof rpcContract>();
-  const [data, setData] = useState<GrantListResult | null>(null);
-  const [journal, setJournal] = useState<Array<{ id: number; at: string; name: string; outcome: keyof typeof OUTCOME_LABEL; via: string | null; grantKind: string | null; threadId: string | null; threadTitle: string | null; projectName: string | null; purpose: string | null; caller: string | null }>>([]);
+  const [journal, setJournal] = useState<
+    Array<{ id: number; at: string; name: string; outcome: string; via: string | null; threadId: string | null; threadTitle: string | null; projectName: string | null; purpose: string | null }>
+  >([]);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [addName, setAddName] = useState("");
-  const [addScope, setAddScope] = useState<"thread" | "project">("project");
-  const [addScopeId, setAddScopeId] = useState("");
 
   const refetch = useCallback(() => {
-    Promise.all([rpc.call("grant_list", null), rpc.call("journal_list", { limit: 50, name: null })])
-      .then(([list, log]) => {
-        setData(list);
-        setJournal(log.entries as never);
+    rpc
+      .call("journal_list", { limit: 50, name: null })
+      .then((log) => {
+        setJournal(log.entries);
         setError(null);
       })
       .catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
@@ -962,183 +924,35 @@ function GrantsSection() {
   }, [refetch]);
   useRealtime(ENV_CATALOG_CHANGED, refetch);
 
-  const run = async (action: () => Promise<unknown>) => {
-    setBusy(true);
-    try {
-      await action();
-      refetch();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   return (
-    <section className="mt-10 space-y-5" aria-label={t("grantsTitle")}>
+    <section className="mt-10 space-y-3" aria-label={t("journalTitle")}>
       <div>
-        <h2 className="text-base font-semibold tracking-tight">{t("grantsTitle")}</h2>
-        <p className="mt-1 max-w-2xl text-xs text-muted-foreground">{t("grantsHint")}</p>
+        <h2 className="text-base font-semibold tracking-tight">{t("journalTitle")}</h2>
+        <p className="mt-1 max-w-2xl text-xs text-muted-foreground">{t("journalHint")}</p>
       </div>
       {error ? (
         <div role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
           {error}
         </div>
       ) : null}
-
-      {data && data.pending.length > 0 ? (
-        <div className="space-y-2">
-          <h3 className="text-sm font-medium">{t("grantPendingTitle")}</h3>
-          {data.pending.map((p) => (
-            <div key={p.id} className="space-y-2 rounded-md border border-border px-3 py-2">
-              <div className="text-sm">
-                <span className="font-mono font-medium">{p.name}</span> → {p.threadTitle ?? p.threadId}
-                {p.projectName ? <span className="text-muted-foreground"> ({p.projectName})</span> : null}
-              </div>
-              {p.purpose ? <div className="text-xs text-muted-foreground">{p.purpose}</div> : null}
-              <GrantButtons
-                busy={busy}
-                hasProject
-                onPick={(decision) => void run(() => rpc.call("grant_decide", { requestId: p.id, decision }))}
-              />
-            </div>
-          ))}
-        </div>
-      ) : null}
-
-      {data && data.grants.length === 0 ? <p className="text-xs text-muted-foreground">{t("grantsNone")}</p> : null}
-      {data && data.grants.length > 0 ? (
-        <ul className="divide-y divide-border rounded-md border border-border">
-          {data.grants.map((g) => (
-            <li key={g.id} className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-2 text-sm">
-              <span className="font-mono font-medium">{g.name}</span>
-              <span className="text-xs text-muted-foreground">
-                {g.scope === "project" ? t("grantScopeProject") : t("grantScopeThread")}: {g.label ?? g.scopeId}
+      {journal.length === 0 ? (
+        <p className="text-xs text-muted-foreground">{t("journalNone")}</p>
+      ) : (
+        <ul className="divide-y divide-border rounded-md border border-border text-xs">
+          {journal.map((j) => (
+            <li key={j.id} className="flex flex-wrap items-center gap-x-4 gap-y-0.5 px-3 py-1.5">
+              <span className="text-muted-foreground">{new Date(j.at).toLocaleString()}</span>
+              <span className="font-mono font-medium">{j.name}</span>
+              <span>{t(OUTCOME_LABEL[j.outcome] ?? "journalIssued")}</span>
+              <span className="text-muted-foreground">
+                {[j.via, j.threadTitle ?? j.threadId, j.projectName].filter(Boolean).join(" · ")}
               </span>
-              <span className="text-xs text-muted-foreground">{new Date(g.grantedAt).toLocaleString()}</span>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                className="ml-auto"
-                disabled={busy}
-                onClick={() => void run(() => rpc.call("grant_revoke", { id: g.id }))}
-              >
-                {t("grantRevoke")}
-              </Button>
+              {j.purpose ? <span className="text-muted-foreground">{j.purpose}</span> : null}
             </li>
           ))}
         </ul>
-      ) : null}
-
-      <form
-        className="flex flex-col gap-2 sm:flex-row sm:items-center"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (!addName.trim() || !addScopeId.trim()) return;
-          void run(async () => {
-            await rpc.call("grant_create", { name: addName.trim(), scope: addScope, scopeId: addScopeId.trim(), label: null });
-            setAddName("");
-            setAddScopeId("");
-          });
-        }}
-      >
-        <span className="text-xs font-medium sm:w-40">{t("grantAddTitle")}</span>
-        <Input placeholder="NAME" value={addName} onChange={(e) => setAddName(e.target.value)} className="sm:max-w-[200px]" />
-        <select
-          value={addScope}
-          onChange={(e) => setAddScope(e.target.value === "thread" ? "thread" : "project")}
-          className="h-9 rounded-md border border-input bg-background px-2 text-sm"
-        >
-          <option value="project">{t("grantScopeProject")}</option>
-          <option value="thread">{t("grantScopeThread")}</option>
-        </select>
-        <Input placeholder={t("grantAddScopeId")} value={addScopeId} onChange={(e) => setAddScopeId(e.target.value)} className="sm:max-w-[220px]" />
-        <Button type="submit" size="sm" disabled={busy || !addName.trim() || !addScopeId.trim()}>
-          {t("grantAddAction")}
-        </Button>
-      </form>
-
-      <div className="space-y-2">
-        <h3 className="text-sm font-medium">{t("journalTitle")}</h3>
-        {journal.length === 0 ? (
-          <p className="text-xs text-muted-foreground">{t("journalNone")}</p>
-        ) : (
-          <ul className="divide-y divide-border rounded-md border border-border text-xs">
-            {journal.map((j) => (
-              <li key={j.id} className="flex flex-wrap items-center gap-x-4 gap-y-0.5 px-3 py-1.5">
-                <span className="text-muted-foreground">{new Date(j.at).toLocaleString()}</span>
-                <span className="font-mono font-medium">{j.name}</span>
-                <span>{t(OUTCOME_LABEL[j.outcome] ?? "journalCancelled")}</span>
-                <span className="text-muted-foreground">
-                  {[j.via, j.grantKind, j.threadTitle ?? j.threadId ?? j.caller, j.projectName].filter(Boolean).join(" · ")}
-                </span>
-                {j.purpose ? <span className="text-muted-foreground">{j.purpose}</span> : null}
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+      )}
     </section>
-  );
-}
-
-function EnvCatalogGrantInteraction({ interaction, submit, cancel }: PluginPendingInteractionProps) {
-  const rpc = useRpc<typeof rpcContract>();
-  const parsed = useMemo(() => envGrantPayloadSchema.safeParse(interaction.payload), [interaction.payload]);
-  const [busy, setBusy] = useState(false);
-  const [formError, setFormError] = useState<string | null>(null);
-
-  if (!parsed.success) {
-    return (
-      <div className="space-y-3 rounded-lg border border-destructive/30 bg-destructive/10 p-4">
-        <p className="text-sm font-medium text-destructive">{t("grantInvalid")}</p>
-        <Button variant="outline" size="sm" onClick={() => void cancel().catch(() => undefined)}>
-          {t("dismiss")}
-        </Button>
-      </div>
-    );
-  }
-  const payload = parsed.data;
-
-  // The answer is recorded by the owner-only grant_decide RPC first; the form's own submit
-  // value only closes the interaction. A refused RPC (caller is not the owner) stops here.
-  const pick = async (decision: EnvGrantDecision) => {
-    setBusy(true);
-    setFormError(null);
-    try {
-      await rpc.call("grant_decide", { requestId: payload.requestId, decision });
-      await submit({ requestId: payload.requestId, decision });
-    } catch (cause) {
-      setFormError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="space-y-3 rounded-lg border border-border bg-card p-4 shadow-xs">
-      <div className="flex items-center gap-2">
-        <div className="flex size-6 items-center justify-center rounded bg-primary/10 text-primary">
-          <Icon name="Lock" className="size-3.5" />
-        </div>
-        <h3 className="text-sm font-semibold">
-          {t("grantFormTitle", { name: payload.name, thread: payload.threadTitle ?? payload.threadId })}
-        </h3>
-      </div>
-      <div className="space-y-0.5 text-xs text-muted-foreground">
-        {payload.projectName ? <p>{t("grantFormProject", { project: payload.projectName })}</p> : null}
-        {payload.purpose ? <p className="text-foreground">{t("grantFormPurpose", { purpose: payload.purpose })}</p> : null}
-        {payload.source ? <p>{t("grantFormVia", { via: payload.source })}</p> : null}
-        <p>{t("grantFormNoteLabel")}</p>
-      </div>
-      {formError ? (
-        <div role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-1.5 text-xs text-destructive">
-          {formError}
-        </div>
-      ) : null}
-      <GrantButtons busy={busy} hasProject={Boolean(payload.projectId)} onPick={(d) => void pick(d)} />
-    </div>
   );
 }
 
@@ -1290,10 +1104,5 @@ export default definePluginApp((app) => {
   app.slots.pendingInteraction({
     id: ENV_REQUEST_RENDERER_ID,
     component: EnvCatalogRequestInteraction,
-  });
-
-  app.slots.pendingInteraction({
-    id: ENV_GRANT_RENDERER_ID,
-    component: EnvCatalogGrantInteraction,
   });
 });

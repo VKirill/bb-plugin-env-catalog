@@ -5,9 +5,7 @@ description: "Unified encrypted catalog of API keys, FTP/SFTP, SSH keys, and sit
 
 # Env Catalog
 
-> **Inside a Lane Pilot errand or PM chat** (`LANE_PILOT_AGENT_TYPE` set / tools `lane_pilot_*` present) read only: `env_list`, `env_get`, `env_request`. Use a value by piping it straight to the consumer or loading it into a shell variable without echo, and never print it (`bb env-catalog get --raw` and `export` write values into the thread's tool output: use `env_get` inside a command instead). `env_set` and `env_delete` change the catalog shared by every machine and are refused for every agent: ask the owner through `env_request`, or have them change it on the Env Catalog page.
-
-> **Getting a value needs the owner's grant (0.3.2).** `env_get` (and `bb env-catalog get NAME --raw` in a shell) returns a value at once when the owner granted that name to your thread or project. Otherwise the owner gets a form by itself («Выдать NAME треду…? Один раз / Всегда для этого проекта / Всегда для этого треда / Нет») and your call **waits up to 10 minutes** for the answer. Pass `purpose` (one short sentence) so the owner knows why. If the answer is no, do not retry and do not look for another route. If it times out ("grant NOT given"), call again later: a new form is posted. Every issue is journalled (never the value). Do not copy a value into a file (`~/.config/...`, `.env`): ask again, the grant is remembered. A shell tool has its own time limit: in a long-running script ask with the `env_get` tool first, then the script's `bb env-catalog get` returns instantly.
+> **Reading is free.** `env_get` (and `bb env-catalog get NAME --raw` in a shell) returns the value at once from any session: no grant, no form, no wait. Every read, save and delete is written to the issuance journal (thread, project, name, time, your optional `purpose`; never the value), shown on the Env Catalog page as «Журнал выдачи». Keep the value out of the chat reply and out of files (`~/.config/...`, `.env` in a repo): load it into a shell variable or pipe it straight to the consumer, and ask again next time instead of caching it.
 
 Encrypted storage on the BB server for API keys, FTP/FTPS/SFTP accounts, SSH private keys, and site logins. Every enrolled machine sees the same catalog.
 
@@ -15,10 +13,9 @@ Encrypted storage on the BB server for API keys, FTP/FTPS/SFTP accounts, SSH pri
 
 1. **Before asking the user for any access** (API key, FTP, SSH, panel login):
    - `env_list` — names, kinds, hosts (values omitted).
-   - `env_get` with the exact name.
-   A refusal always says what to do next; follow it.
+   - `env_get` with the exact name: the value comes back at once.
 2. **If it is missing:** call `env_request` with `name` and `kind` (`secret` | `ftp` | `ssh` | `login`). Never ask the user to paste secrets into chat.
-3. **If they already pasted a credential in the thread** and asked you to keep it: `env_set` refuses agents, so call `env_request` for that name (the owner enters it in the masked form) or tell them to add it on the Env Catalog page. Without that ask, use it for the task and tell them it is not saved.
+3. **If they already pasted a credential in the thread** and asked you to keep it: save it with `env_set` (and do not repeat it in your reply). If they did not ask to keep it, use it for the task and tell them it is not saved.
 4. **File Gateway FTP** is only for browsing site files inside BB. Use Env Catalog when a script, `ssh`, deploy, or API call needs the credential.
 
 Do not repeat decrypted secrets in the chat reply. Use them in tools and commands.
@@ -46,10 +43,10 @@ Names stay env-style: `OPENAI_API_KEY`, `OVH_SSH`, `FTP_OHMYSEO`.
 ```json
 { "name": "OVH_SSH", "purpose": "deploy the site to OVH" }
 ```
-Result: `granted:true` with `value` / `access` and `grant` (`once`, `thread`, `project`), or `granted:false` with `reason` (`denied`, `timeout`, `unavailable`, `not_found`) and a `message` to follow.
+`purpose` is optional (one short sentence; it goes to the journal). Result: `found:true` with `kind`, `value` / `access`, `description`, `service`; or `found:false` with a hint to call `env_list`.
 
 ### `env_set`
-Refused for agents (kept here only to show the field names the owner uses on the page). API key:
+Saves or updates an entry; use it when the owner pastes a credential into the chat and wants it kept. API key:
 ```json
 { "name": "TAVILY_API_KEY", "value": "tvly-xxxx", "service": "Tavily" }
 ```
@@ -85,20 +82,20 @@ FTP:
 ```
 
 ### `env_delete`
-Refused for agents: the owner removes an entry on the Env Catalog page.
+Deletes an entry (recorded in the journal). Delete only what the owner asked you to delete.
 ```json
 { "name": "OLD_TOKEN" }
 ```
 
 ## CLI
 
-On a VK core, `set`, `delete`, `export` and `import-machine-env` run only for the owner's own terminal; inside an agent session they answer "Refused" with the next step (`env_request`, or the Env Catalog page). `get` works in an agent session through the same owner grant as `env_get` (form, wait up to 10 minutes, journal). `list` and `request` work everywhere.
+Every command works from any session, an agent shell included; reads, saves and deletes are journalled. `get` accepts `--purpose "text"` for the journal.
 
 ```bash
 bb env-catalog list [--kind ssh]
-bb env-catalog get OVH_SSH --raw --purpose "deploy"   # prints the secret; in an agent session it needs the owner grant; never in a Lane Pilot thread
+bb env-catalog get OVH_SSH --raw --purpose "deploy"   # prints the secret at once; do not paste the output into the chat
 bb env-catalog set OPENAI_API_KEY sk-proj-... --service OpenAI
 bb env-catalog set OVH_SSH --kind ssh --host 1.2.3.4 --user ubuntu --private-key "-----BEGIN…"
 bb env-catalog request OVH_SSH --kind ssh --purpose "Deploy"
-bb env-catalog export --format json      # prints every secret: terminal only, owner-requested
+bb env-catalog export --format json      # prints every secret: only when the owner asked for an export
 ```

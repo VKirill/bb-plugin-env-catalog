@@ -1,14 +1,27 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { defineRpcContract, type BbPluginApi, type PluginCliContext } from "@get-bb/plugin-sdk";
+import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import Database from "better-sqlite3";
 import { z } from "zod";
 import { ENV_REQUEST_RENDERER_ID, envRequestResponseSchema } from "./contracts.js";
+import {
+  accessFromFlat,
+  credentialKindSchema,
+  maskAccess,
+  packStoredValue,
+  parseKind,
+  revealText,
+  unpackStoredValue,
+  type CredentialKind,
+} from "./kinds.js";
 
 export interface EnvRecord {
   name: string;
-  value: string;
+  kind: CredentialKind;
+  value: string | null;
+  access: ReturnType<typeof unpackStoredValue>["access"];
+  stored: string;
   description?: string;
   service?: string;
   tags?: string[];
@@ -18,6 +31,7 @@ export interface EnvRecord {
 
 export interface EnvSummary {
   name: string;
+  kind: CredentialKind;
   maskedValue: string;
   description?: string | null;
   service?: string | null;
@@ -28,6 +42,7 @@ export interface EnvSummary {
 
 const summarySchema = z.object({
   name: z.string(),
+  kind: credentialKindSchema,
   maskedValue: z.string(),
   description: z.string().nullable().optional(),
   service: z.string().nullable().optional(),
@@ -36,10 +51,13 @@ const summarySchema = z.object({
   updatedAt: z.string(),
 });
 
+const accessSchema = z.record(z.string(), z.unknown()).nullable().optional();
+
 export const rpcContract = defineRpcContract({
   env_list: {
     input: z.object({
       query: z.string().nullable().optional(),
+      kind: credentialKindSchema.nullable().optional(),
     }),
     output: z.object({
       variables: z.array(summarySchema),
@@ -51,7 +69,10 @@ export const rpcContract = defineRpcContract({
     }),
     output: z.object({
       name: z.string(),
-      value: z.string(),
+      kind: credentialKindSchema,
+      value: z.string().nullable(),
+      access: z.unknown().nullable(),
+      reveal: z.string(),
       description: z.string().nullable().optional(),
       service: z.string().nullable().optional(),
       tags: z.array(z.string()).nullable().optional(),
@@ -60,7 +81,9 @@ export const rpcContract = defineRpcContract({
   env_save: {
     input: z.object({
       name: z.string().trim().min(1),
-      value: z.string(),
+      kind: credentialKindSchema.nullable().optional(),
+      value: z.string().nullable().optional(),
+      access: accessSchema,
       description: z.string().nullable().optional(),
       service: z.string().nullable().optional(),
       tags: z.array(z.string()).nullable().optional(),
@@ -106,15 +129,7 @@ export const rpcContract = defineRpcContract({
 
 export const ENV_CATALOG_CHANGED = "env-catalog:changed";
 
-function maskValue(val: string): string {
-  if (!val || val.length === 0) return "";
-  if (val.length <= 8) return "••••••••";
-  const start = val.slice(0, 4);
-  const end = val.slice(-4);
-  return `${start}••••••••${end}`;
-}
-
-function inferService(name: string): string | undefined {
+function inferService(name: string, kind?: CredentialKind): string | undefined {
   const upper = name.toUpperCase();
   if (upper.includes("OPENAI")) return "OpenAI";
   if (upper.includes("DEEPSEEK")) return "DeepSeek";
@@ -127,6 +142,10 @@ function inferService(name: string): string | undefined {
   if (upper.includes("XMLSTOCK")) return "xmlstock";
   if (upper.includes("GEMINI") || upper.includes("GOOGLE")) return "Google Gemini";
   if (upper.includes("ALPHAXIV")) return "alphaXiv";
+  if (upper.includes("TAVILY")) return "Tavily";
+  if (kind === "ftp" || upper.includes("FTP") || upper.includes("SFTP")) return "FTP";
+  if (kind === "ssh" || upper.includes("SSH")) return "SSH";
+  if (upper.includes("OVH")) return "OVH";
   return undefined;
 }
 
@@ -192,12 +211,22 @@ export default async function plugin(bb: BbPluginApi) {
     `CREATE INDEX IF NOT EXISTS idx_env_service ON env_variables(service);`,
   ]);
 
+  const columns = db
+    .prepare("PRAGMA table_info(env_variables)")
+    .all() as Array<{ name: string }>;
+  if (!columns.some((c) => c.name === "kind")) {
+    db.exec(
+      `ALTER TABLE env_variables ADD COLUMN kind TEXT NOT NULL DEFAULT 'secret';`,
+    );
+  }
+
   interface DbRow {
     name: string;
     encrypted_value: string;
     description: string | null;
     service: string | null;
     tags: string | null;
+    kind: string | null;
     created_at: string;
     updated_at: string;
   }
@@ -212,16 +241,19 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
 
-  async function listSummaries(searchQuery?: string | null): Promise<EnvSummary[]> {
+  async function listSummaries(
+    searchQuery?: string | null,
+    kindFilter?: CredentialKind | null,
+  ): Promise<EnvSummary[]> {
     let rows: DbRow[];
     if (searchQuery && searchQuery.trim().length > 0) {
       const pattern = `%${searchQuery.trim().toLowerCase()}%`;
-      const stmt = db.prepare<[string, string, string], DbRow>(
+      const stmt = db.prepare<[string, string, string, string], DbRow>(
         `SELECT * FROM env_variables 
-         WHERE LOWER(name) LIKE ? OR LOWER(service) LIKE ? OR LOWER(description) LIKE ?
+         WHERE LOWER(name) LIKE ? OR LOWER(service) LIKE ? OR LOWER(description) LIKE ? OR LOWER(kind) LIKE ?
          ORDER BY name ASC`
       );
-      rows = stmt.all(pattern, pattern, pattern);
+      rows = stmt.all(pattern, pattern, pattern, pattern);
     } else {
       const stmt = db.prepare<[], DbRow>(
         `SELECT * FROM env_variables ORDER BY name ASC`
@@ -229,23 +261,28 @@ export default async function plugin(bb: BbPluginApi) {
       rows = stmt.all();
     }
 
-    return rows.map((row) => {
-      let decrypted = "";
-      try {
-        decrypted = decrypt(row.encrypted_value);
-      } catch {
-        decrypted = "••••";
-      }
-      return {
-        name: row.name,
-        maskedValue: maskValue(decrypted),
-        description: row.description ?? null,
-        service: row.service ?? null,
-        tags: parseTags(row.tags) ?? null,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-      };
-    });
+    return rows
+      .map((row) => {
+        const storedKind = parseKind(row.kind);
+        let decrypted = "";
+        try {
+          decrypted = decrypt(row.encrypted_value);
+        } catch {
+          decrypted = "";
+        }
+        const unpacked = unpackStoredValue(storedKind, decrypted || "••••");
+        return {
+          name: row.name,
+          kind: unpacked.kind,
+          maskedValue: decrypted ? maskAccess(storedKind, decrypted) : "••••••••",
+          description: row.description ?? null,
+          service: row.service ?? null,
+          tags: parseTags(row.tags) ?? null,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+        };
+      })
+      .filter((row) => (kindFilter ? row.kind === kindFilter : true));
   }
 
   async function getVariable(name: string): Promise<EnvRecord | null> {
@@ -255,9 +292,14 @@ export default async function plugin(bb: BbPluginApi) {
     const row = stmt.get(name.trim());
     if (!row) return null;
 
+    const stored = decrypt(row.encrypted_value);
+    const unpacked = unpackStoredValue(parseKind(row.kind), stored);
     return {
       name: row.name,
-      value: decrypt(row.encrypted_value),
+      kind: unpacked.kind,
+      value: unpacked.value,
+      access: unpacked.access,
+      stored,
       description: row.description ?? undefined,
       service: row.service ?? undefined,
       tags: parseTags(row.tags),
@@ -268,14 +310,18 @@ export default async function plugin(bb: BbPluginApi) {
 
   async function saveVariable(params: {
     name: string;
-    value: string;
+    kind?: CredentialKind | null;
+    value?: string | null;
+    access?: unknown;
     description?: string | null;
     service?: string | null;
     tags?: string[] | null;
   }): Promise<void> {
     const now = new Date().toISOString();
     const cleanName = params.name.trim();
-    const encrypted = encrypt(params.value);
+    const kind = parseKind(params.kind ?? "secret");
+    const packed = packStoredValue(kind, params.value ?? undefined, params.access);
+    const encrypted = encrypt(packed);
     const tagsJson = params.tags ? JSON.stringify(params.tags) : null;
 
     const existing = db
@@ -288,21 +334,22 @@ export default async function plugin(bb: BbPluginApi) {
 
     const stmt = db.prepare(
       `INSERT OR REPLACE INTO env_variables 
-       (name, encrypted_value, description, service, tags, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
+       (name, encrypted_value, description, service, tags, kind, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     );
 
     stmt.run(
       cleanName,
       encrypted,
       params.description?.trim() || null,
-      params.service?.trim() || null,
+      params.service?.trim() || inferService(cleanName, kind) || null,
       tagsJson,
+      kind,
       createdAt,
       now
     );
 
-    bb.realtime.publish(ENV_CATALOG_CHANGED, { name: cleanName, action: "save" });
+    bb.realtime.publish(ENV_CATALOG_CHANGED, { name: cleanName, action: "save", kind });
   }
 
   async function deleteVariable(name: string): Promise<boolean> {
@@ -321,12 +368,18 @@ export default async function plugin(bb: BbPluginApi) {
       `SELECT * FROM env_variables ORDER BY name ASC`
     );
     const rows = stmt.all();
-    const records = rows.map((r) => ({
-      name: r.name,
-      value: decrypt(r.encrypted_value),
-      description: r.description ?? undefined,
-      service: r.service ?? undefined,
-    }));
+    const records = rows.map((r) => {
+      const stored = decrypt(r.encrypted_value);
+      const unpacked = unpackStoredValue(parseKind(r.kind), stored);
+      return {
+        name: r.name,
+        kind: unpacked.kind,
+        value: unpacked.value,
+        access: unpacked.access,
+        description: r.description ?? undefined,
+        service: r.service ?? undefined,
+      };
+    });
 
     if (format === "json") {
       return JSON.stringify(records, null, 2);
@@ -334,13 +387,19 @@ export default async function plugin(bb: BbPluginApi) {
 
     const lines: string[] = [];
     for (const r of records) {
-      if (r.description) {
-        lines.push(`# ${r.description}${r.service ? ` (${r.service})` : ""}`);
+      if (r.description || r.kind !== "secret") {
+        lines.push(
+          `# ${r.description ?? r.kind}${r.service ? ` (${r.service})` : ""} [${r.kind}]`,
+        );
       }
+      const raw =
+        r.kind === "secret"
+          ? (r.value ?? "")
+          : JSON.stringify({ v: 1, kind: r.kind, access: r.access });
       const escaped =
-        r.value.includes(" ") || r.value.includes("\n") || r.value.includes('"')
-          ? JSON.stringify(r.value)
-          : r.value;
+        raw.includes(" ") || raw.includes("\n") || raw.includes('"')
+          ? JSON.stringify(raw)
+          : raw;
       lines.push(`${r.name}=${escaped}`);
     }
     return lines.join("\n");
@@ -357,14 +416,18 @@ export default async function plugin(bb: BbPluginApi) {
         const parsed = JSON.parse(content);
         if (Array.isArray(parsed)) {
           for (const item of parsed) {
-            if (item && typeof item.name === "string" && typeof item.value === "string") {
+            if (item && typeof item.name === "string") {
               if (!overwrite) {
                 const existing = await getVariable(item.name);
                 if (existing) continue;
               }
+              const kind = parseKind(item.kind);
+              if (kind === "secret" && typeof item.value !== "string") continue;
               await saveVariable({
                 name: item.name,
-                value: item.value,
+                kind,
+                value: typeof item.value === "string" ? item.value : undefined,
+                access: item.access,
                 description: item.description,
                 service: item.service,
                 tags: item.tags,
@@ -427,7 +490,7 @@ export default async function plugin(bb: BbPluginApi) {
     return count;
   }
 
-  function importFromMachineEnvironment(): number {
+  async function importFromMachineEnvironment(): Promise<number> {
     const keyFile = join(dataDir, "machine-environment-key");
     const mainDbFile = join(dataDir, "bb.db");
 
@@ -472,7 +535,7 @@ export default async function plugin(bb: BbPluginApi) {
           const description =
             parsed.note || (service ? `${service} API key / credential` : undefined);
 
-          saveVariable({
+          await saveVariable({
             name: parsed.name,
             value: val,
             description,
@@ -497,8 +560,8 @@ export default async function plugin(bb: BbPluginApi) {
 
   // Register RPC Handlers for Frontend UI
   bb.rpc.register(rpcContract, {
-    env_list: async ({ query }) => ({
-      variables: await listSummaries(query),
+    env_list: async ({ query, kind }) => ({
+      variables: await listSummaries(query, kind),
     }),
     env_get_value: async ({ name }) => {
       const record = await getVariable(name);
@@ -507,7 +570,10 @@ export default async function plugin(bb: BbPluginApi) {
       }
       return {
         name: record.name,
+        kind: record.kind,
         value: record.value,
+        access: record.access,
+        reveal: revealText(record.kind, record.stored),
         description: record.description ?? null,
         service: record.service ?? null,
         tags: record.tags ?? null,
@@ -528,14 +594,15 @@ export default async function plugin(bb: BbPluginApi) {
       importedCount: await importContent(content, format, overwrite),
     }),
     env_import_machine_env: async () => ({
-      importedCount: importFromMachineEnvironment(),
+      importedCount: await importFromMachineEnvironment(),
     }),
   });
 
   // Register Agent Tools
   bb.agents.registerTool({
     name: "env_get",
-    description: "Retrieve an environment variable, token, or API key from the Env Catalog by its exact name.",
+    description:
+      "Retrieve a credential from Env Catalog by exact name: API key, FTP/SFTP account, SSH key, or site login. Do not echo the secret in chat.",
     parameters: z.object({
       name: z.string().describe("Exact name of the variable (e.g. OPENAI_API_KEY, TAVILY_API_KEY)"),
     }),
@@ -557,7 +624,9 @@ export default async function plugin(bb: BbPluginApi) {
       return JSON.stringify({
         found: true,
         name: item.name,
+        kind: item.kind,
         value: item.value,
+        access: item.access,
         description: item.description,
         service: item.service,
       });
@@ -566,9 +635,13 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.agents.registerTool({
     name: "env_list",
-    description: "List all environment variable and secret names in the Env Catalog. Values are omitted for token efficiency.",
+    description:
+      "List credential names in Env Catalog (API keys, FTP, SSH, logins). Values are omitted. Filter with query or kind.",
     parameters: z.object({
-      query: z.string().optional().describe("Optional filter by variable name, service, or description"),
+      query: z.string().optional().describe("Optional filter by name, service, kind, or description"),
+      kind: credentialKindSchema
+        .optional()
+        .describe("Optional type filter: secret, ftp, ssh, or login"),
     }),
     presentation: {
       label: {
@@ -576,14 +649,16 @@ export default async function plugin(bb: BbPluginApi) {
         completed: "Listed keys in Env Catalog",
       },
     },
-    async execute({ query }) {
-      const summaries = await listSummaries(query);
+    async execute({ query, kind }) {
+      const summaries = await listSummaries(query, kind);
       return JSON.stringify({
         count: summaries.length,
         variables: summaries.map((s) => ({
           name: s.name,
+          kind: s.kind,
           service: s.service,
           description: s.description,
+          summary: s.maskedValue,
           tags: s.tags,
           updatedAt: s.updatedAt,
         })),
@@ -593,13 +668,30 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.agents.registerTool({
     name: "env_set",
-    description: "Store or update an environment variable or API key in the Env Catalog for reuse across sessions and machines.",
+    description:
+      "Store or update a credential in Env Catalog: API key (kind=secret), FTP/FTPS/SFTP, SSH host+private key, or a site login. Available to every enrolled machine.",
     parameters: z.object({
-      name: z.string().describe("Variable name (e.g. OPENAI_API_KEY, STRIPE_SECRET_KEY)"),
-      value: z.string().describe("The secret value, API key, or token"),
-      description: z.string().optional().describe("Short explanation of what this key is for"),
-      service: z.string().optional().describe("Service name (e.g. OpenAI, Anthropic, Tavily, Google)"),
-      tags: z.array(z.string()).optional().describe("Optional tags (e.g. ['ai', 'search'])"),
+      name: z.string().describe("Stable name (e.g. OPENAI_API_KEY, OVH_SSH, FTP_OHMYSEO)"),
+      kind: credentialKindSchema
+        .optional()
+        .describe("secret (default), ftp, ssh, or login"),
+      value: z
+        .string()
+        .optional()
+        .describe("Secret string when kind is secret (API key, token, PEM as a single value)"),
+      description: z.string().optional().describe("Short note"),
+      service: z.string().optional().describe("Service label (OpenAI, OVH, Beget…)"),
+      tags: z.array(z.string()).optional(),
+      protocol: z.enum(["ftp", "ftps", "sftp"]).optional().describe("FTP kind: protocol"),
+      host: z.string().optional().describe("FTP/SSH/login host"),
+      port: z.number().optional().describe("Port; default 21 for FTP, 22 for SSH/SFTP"),
+      username: z.string().optional(),
+      password: z.string().optional().describe("FTP or login password"),
+      privateKey: z.string().optional().describe("SSH private key PEM / OpenSSH text"),
+      passphrase: z.string().optional().describe("Optional passphrase for the SSH key"),
+      fingerprint: z.string().optional().describe("Optional SHA-256 host key fingerprint"),
+      root: z.string().optional().describe("FTP remote root path"),
+      url: z.string().optional().describe("Login panel URL"),
     }),
     presentation: {
       label: {
@@ -607,12 +699,54 @@ export default async function plugin(bb: BbPluginApi) {
         completed: "Saved secret to Env Catalog",
       },
     },
-    async execute({ name, value, description, service, tags }) {
-      await saveVariable({ name, value, description, service, tags });
+    async execute({
+      name,
+      kind,
+      value,
+      description,
+      service,
+      tags,
+      protocol,
+      host,
+      port,
+      username,
+      password,
+      privateKey,
+      passphrase,
+      fingerprint,
+      root,
+      url,
+    }) {
+      const resolved = parseKind(kind ?? "secret");
+      const access =
+        resolved === "secret"
+          ? undefined
+          : accessFromFlat(resolved, {
+              protocol,
+              host,
+              port,
+              username,
+              password,
+              privateKey,
+              passphrase,
+              fingerprint,
+              root,
+              url,
+            });
+      await saveVariable({
+        name,
+        kind: resolved,
+        value,
+        access,
+        description,
+        service,
+        tags,
+      });
       return JSON.stringify({
         success: true,
         name: name.trim(),
-        message: `Saved '${name.trim()}' in Env Catalog.`,
+        kind: resolved,
+        message: `Saved '${name.trim()}' (${resolved}) in Env Catalog.`,
       });
     },
   });
@@ -643,11 +777,16 @@ export default async function plugin(bb: BbPluginApi) {
 
   async function requestSecretsFromUser(options: {
     threadId: string;
-    fields: Array<{ name: string; description?: string | null; service?: string | null }>;
+    fields: Array<{
+      name: string;
+      kind?: CredentialKind | null;
+      description?: string | null;
+      service?: string | null;
+    }>;
     purpose?: string | null;
     signal?: AbortSignal;
   }): Promise<
-    | { outcome: "submitted"; values: Record<string, string> }
+    | { outcome: "submitted"; payload: import("./contracts.js").EnvRequestResponse }
     | { outcome: "cancelled"; reason: string }
   > {
     const title =
@@ -664,8 +803,9 @@ export default async function plugin(bb: BbPluginApi) {
           purpose: options.purpose ?? null,
           fields: options.fields.map((f) => ({
             name: f.name,
+            kind: parseKind(f.kind ?? "secret"),
             description: f.description ?? null,
-            service: f.service ?? inferService(f.name) ?? null,
+            service: f.service ?? inferService(f.name, parseKind(f.kind ?? "secret")) ?? null,
           })),
         },
       },
@@ -681,13 +821,47 @@ export default async function plugin(bb: BbPluginApi) {
       throw new Error("Invalid response received from secret input form.");
     }
 
-    return { outcome: "submitted", values: parsed.data.values };
+    return { outcome: "submitted", payload: parsed.data };
+  }
+
+  async function persistRequestPayload(
+    payload: import("./contracts.js").EnvRequestResponse,
+    fields: Array<{ name: string; kind?: CredentialKind | null; description?: string | null; service?: string | null }>,
+  ): Promise<string[]> {
+    const savedNames: string[] = [];
+    if (payload.entries && payload.entries.length > 0) {
+      for (const entry of payload.entries) {
+        const fieldMeta = fields.find((f) => f.name === entry.name);
+        await saveVariable({
+          name: entry.name,
+          kind: parseKind(entry.kind ?? fieldMeta?.kind ?? "secret"),
+          value: entry.value,
+          access: entry.access,
+          description: entry.description ?? fieldMeta?.description ?? undefined,
+          service: entry.service ?? fieldMeta?.service ?? undefined,
+        });
+        savedNames.push(entry.name);
+      }
+      return savedNames;
+    }
+    for (const [key, val] of Object.entries(payload.values ?? {})) {
+      const fieldMeta = fields.find((f) => f.name === key);
+      await saveVariable({
+        name: key,
+        kind: "secret",
+        value: val,
+        description: fieldMeta?.description ?? undefined,
+        service: fieldMeta?.service ?? undefined,
+      });
+      savedNames.push(key);
+    }
+    return savedNames;
   }
 
   bb.agents.registerTool({
     name: "env_request",
     description:
-      "Securely prompt the user with a masked in-app input form to enter one or more API keys or secrets. Use this whenever an API key or credential is required but not found in the Env Catalog, instead of asking the user in plain chat. Values are encrypted and saved directly to the Env Catalog without appearing in chat history.",
+      "Securely prompt the user for credentials (API key, FTP, SSH key, or login) via a masked in-app form. Use whenever access is missing from Env Catalog instead of asking in chat. Values are encrypted and never appear in the transcript.",
     parameters: z.object({
       name: z
         .string()
@@ -711,10 +885,13 @@ export default async function plugin(bb: BbPluginApi) {
         .string()
         .optional()
         .describe("Short description of what the key is"),
+      kind: credentialKindSchema
+        .optional()
+        .describe("secret (default), ftp, ssh, or login — selects the form fields shown to the user"),
       service: z
         .string()
         .optional()
-        .describe("Service name (e.g. OpenAI, Anthropic, Tavily, Google)"),
+        .describe("Service label (OpenAI, OVH, Beget…)"),
     }),
     presentation: {
       label: {
@@ -750,8 +927,9 @@ export default async function plugin(bb: BbPluginApi) {
 
       const fields = rawNames.map((name) => ({
         name,
+        kind: parseKind(params.kind ?? "secret"),
         description: params.description ?? null,
-        service: params.service ?? inferService(name) ?? null,
+        service: params.service ?? inferService(name, parseKind(params.kind ?? "secret")) ?? null,
       }));
 
       const promptResult = await requestSecretsFromUser({
@@ -770,17 +948,7 @@ export default async function plugin(bb: BbPluginApi) {
         });
       }
 
-      const savedNames: string[] = [];
-      for (const [key, val] of Object.entries(promptResult.values)) {
-        const fieldMeta = fields.find((f) => f.name === key);
-        await saveVariable({
-          name: key,
-          value: val,
-          description: fieldMeta?.description ?? undefined,
-          service: fieldMeta?.service ?? undefined,
-        });
-        savedNames.push(key);
-      }
+      const savedNames = await persistRequestPayload(promptResult.payload, fields);
 
       return JSON.stringify({
         success: true,
@@ -792,7 +960,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   // Dynamic Instructions for Agents
   bb.agents.contributeInstructions(() => {
-    return "Env Catalog is active. When an API key, token, or secret is needed for an external service or script, check available credentials using `env_list` and retrieve the required value with `env_get`. If a required key is missing, NEVER ask the user to paste it into chat; instead, call `env_request` to open a secure masked input form in the UI. The secret will be encrypted and stored directly in the Env Catalog without leaking into chat history. When the user provides a new credential in conversation, store it using `env_set`.";
+    return "Env Catalog is active. It stores API keys, FTP/FTPS/SFTP accounts, SSH private keys, and site logins encrypted on the BB server for every enrolled machine. Before asking the user: env_list (optional query or kind=secret|ftp|ssh|login), then env_get with the exact name. env_get returns value and/or access fields (host, username, password, privateKey). Do not repeat secrets in chat. If access is missing, env_request with name and kind — never ask the user to paste credentials into the thread. Newly given credentials: env_set (kind + fields). File Gateway FTP is only for browsing site files in BB; use Env Catalog when a script, SSH session, or API call needs the credential.";
   });
 
   // CLI Command Registration
@@ -800,10 +968,13 @@ export default async function plugin(bb: BbPluginApi) {
     "Env Catalog CLI",
     "",
     "Usage:",
-    "  bb env-catalog list [--query <text>] [--json]",
+    "  bb env-catalog list [--query <text>] [--kind secret|ftp|ssh|login] [--json]",
     "  bb env-catalog get <NAME> [--raw]",
     "  bb env-catalog set <NAME> <VALUE> [--desc <text>] [--service <text>]",
-    "  bb env-catalog request <NAME...> [--purpose <text>] [--describe <NAME> <text>] [--service <text>]",
+    "  bb env-catalog set <NAME> --kind ftp --host <h> --user <u> --password <p> [--protocol ftp|ftps|sftp] [--port <n>] [--root <path>] [--fingerprint <hex>]",
+    "  bb env-catalog set <NAME> --kind ssh --host <h> --user <u> --private-key <pem> [--port 22] [--passphrase <p>] [--fingerprint <hex>]",
+    "  bb env-catalog set <NAME> --kind login --user <u> --password <p> [--url <url>] [--host <h>]",
+    "  bb env-catalog request <NAME...> [--kind secret|ftp|ssh|login] [--purpose <text>] [--describe <NAME> <text>] [--service <text>]",
     "  bb env-catalog delete <NAME>",
     "  bb env-catalog export [--format env|json]",
     "  bb env-catalog import-machine-env",
@@ -816,6 +987,7 @@ export default async function plugin(bb: BbPluginApi) {
     services: Map<string, string>;
     defaultService: string | null;
     threadId: string | null;
+    kind: CredentialKind;
   } {
     const names: string[] = [];
     const descriptions = new Map<string, string>();
@@ -823,11 +995,17 @@ export default async function plugin(bb: BbPluginApi) {
     let defaultService: string | null = null;
     let purpose: string | null = null;
     let threadId: string | null = null;
+    let kind: CredentialKind = "secret";
 
     for (let i = 0; i < args.length; i++) {
       const token = args[i] ?? "";
       if (!token.startsWith("--")) {
         names.push(token.trim());
+        continue;
+      }
+      if (token === "--kind") {
+        i++;
+        kind = parseKind(args[i]?.trim());
         continue;
       }
       if (token === "--thread") {
@@ -862,17 +1040,17 @@ export default async function plugin(bb: BbPluginApi) {
       }
     }
 
-    return { names, purpose, descriptions, services, defaultService, threadId };
+    return { names, purpose, descriptions, services, defaultService, threadId, kind };
   }
 
   bb.cli.register({
     name: "env-catalog",
-    summary: "Manage encrypted API keys and environment variables in the Env Catalog",
+    summary: "Manage encrypted API keys, FTP, SSH, and logins in Env Catalog",
     commands: [
       {
         name: "list",
         summary: "List stored environment variables",
-        usage: "bb env-catalog list [--query <text>] [--json]",
+        usage: "bb env-catalog list [--query <text>] [--kind secret|ftp|ssh|login] [--json]",
       },
       {
         name: "get",
@@ -882,13 +1060,14 @@ export default async function plugin(bb: BbPluginApi) {
       {
         name: "set",
         summary: "Store or update a secret",
-        usage: "bb env-catalog set <NAME> <VALUE> [--desc <text>] [--service <text>]",
+        usage:
+          "bb env-catalog set <NAME> <VALUE> | --kind ftp|ssh|login --host … --user …",
       },
       {
         name: "request",
         summary: "Securely request secrets from user via masked form in thread",
         usage:
-          "bb env-catalog request <NAME...> [--purpose <text>] [--describe <NAME> <text>]... [--service <text>]",
+          "bb env-catalog request <NAME...> [--kind secret|ftp|ssh|login] [--purpose <text>]",
       },
       {
         name: "delete",
@@ -934,17 +1113,22 @@ export default async function plugin(bb: BbPluginApi) {
           if (qIdx !== -1 && args[qIdx + 1]) {
             q = args[qIdx + 1];
           }
-          const items = await listSummaries(q);
+          let kindFilter: CredentialKind | undefined;
+          const kIdx = args.indexOf("--kind");
+          if (kIdx !== -1 && args[kIdx + 1]) {
+            kindFilter = parseKind(args[kIdx + 1]);
+          }
+          const items = await listSummaries(q, kindFilter);
           if (json) {
             return reply(items, "");
           }
           if (items.length === 0) {
-            return reply([], "No environment variables found.");
+            return reply([], "No credentials found.");
           }
           const table = items
             .map(
               (it) =>
-                `${it.name.padEnd(28)} ${it.maskedValue.padEnd(16)} ${
+                `${it.name.padEnd(28)} ${it.kind.padEnd(7)} ${it.maskedValue.padEnd(24)} ${
                   it.service ? `[${it.service}] ` : ""
                 }${it.description || ""}`
             )
@@ -957,33 +1141,56 @@ export default async function plugin(bb: BbPluginApi) {
           if (!name) return error("Variable name required: bb env-catalog get <NAME>");
           const item = await getVariable(name);
           if (!item) return error(`Variable '${name}' not found.`);
+          const printable =
+            item.kind === "secret" ? (item.value ?? "") : JSON.stringify(item.access, null, 2);
           if (raw) {
-            return { exitCode: 0, stdout: item.value };
+            return { exitCode: 0, stdout: printable };
           }
-          return reply(item, `${item.name}=${item.value}`);
+          return reply(item, `${item.name} (${item.kind})\n${printable}`);
         }
 
         case "set": {
           const name = args[0];
-          const value = args[1];
-          if (!name || value === undefined) {
-            return error("Name and value required: bb env-catalog set <NAME> <VALUE>");
+          if (!name) {
+            return error("Name required: bb env-catalog set <NAME> …");
           }
-          let description: string | undefined;
-          let service: string | undefined;
-
-          const descIdx = args.indexOf("--desc");
-          if (descIdx !== -1 && args[descIdx + 1]) description = args[descIdx + 1];
-
-          const srvIdx = args.indexOf("--service");
-          if (srvIdx !== -1 && args[srvIdx + 1]) service = args[srvIdx + 1];
-
-          await saveVariable({ name, value, description, service });
-          return reply({ success: true, name }, `Saved '${name}' to Env Catalog.`);
+          const take = (flag: string) => {
+            const idx = args.indexOf(flag);
+            return idx !== -1 && args[idx + 1] ? args[idx + 1] : undefined;
+          };
+          const kind = parseKind(take("--kind") ?? "secret");
+          const description = take("--desc");
+          const service = take("--service");
+          if (kind === "secret") {
+            const value = args[1]?.startsWith("--") ? undefined : args[1];
+            if (value === undefined) {
+              return error("Name and value required: bb env-catalog set <NAME> <VALUE>");
+            }
+            await saveVariable({ name, kind, value, description, service });
+          } else {
+            try {
+              const access = accessFromFlat(kind, {
+                protocol: take("--protocol"),
+                host: take("--host"),
+                port: take("--port") ? Number(take("--port")) : undefined,
+                username: take("--user") ?? take("--username"),
+                password: take("--password"),
+                privateKey: take("--private-key"),
+                passphrase: take("--passphrase"),
+                fingerprint: take("--fingerprint"),
+                root: take("--root"),
+                url: take("--url"),
+              });
+              await saveVariable({ name, kind, access, description, service });
+            } catch (err) {
+              return error(err instanceof Error ? err.message : String(err));
+            }
+          }
+          return reply({ success: true, name, kind }, `Saved '${name}' (${kind}) to Env Catalog.`);
         }
 
         case "request": {
-          const { names, purpose, descriptions, services, defaultService, threadId } =
+          const { names, purpose, descriptions, services, defaultService, threadId, kind } =
             parseCliRequest(args);
           const targetThreadId = threadId || ctx.threadId || process.env.BB_THREAD_ID;
           if (!targetThreadId) {
@@ -999,9 +1206,10 @@ export default async function plugin(bb: BbPluginApi) {
 
           const fields = names.map((name) => ({
             name,
+            kind,
             description: descriptions.get(name) ?? null,
             service:
-              services.get(name) ?? defaultService ?? inferService(name) ?? null,
+              services.get(name) ?? defaultService ?? inferService(name, kind) ?? null,
           }));
 
           const promptResult = await requestSecretsFromUser({
@@ -1015,17 +1223,7 @@ export default async function plugin(bb: BbPluginApi) {
             return error(`Secret request cancelled (${promptResult.reason}).`);
           }
 
-          const savedNames: string[] = [];
-          for (const [key, val] of Object.entries(promptResult.values)) {
-            const fieldMeta = fields.find((f) => f.name === key);
-            await saveVariable({
-              name: key,
-              value: val,
-              description: fieldMeta?.description ?? undefined,
-              service: fieldMeta?.service ?? undefined,
-            });
-            savedNames.push(key);
-          }
+          const savedNames = await persistRequestPayload(promptResult.payload, fields);
 
           return reply(
             { success: true, saved: savedNames },
@@ -1052,7 +1250,7 @@ export default async function plugin(bb: BbPluginApi) {
         }
 
         case "import-machine-env": {
-          const count = importFromMachineEnvironment();
+          const count = await importFromMachineEnvironment();
           return reply(
             { importedCount: count },
             `Successfully imported and decrypted ${count} keys from BB Machine Environment.`

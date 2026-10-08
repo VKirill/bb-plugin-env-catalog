@@ -1,6 +1,6 @@
 ## Keep credentials in one place across all sessions and machines
 
-Store external API keys, service tokens, and secrets in a single encrypted catalog. When agents need a key for an API call, script, or framework, they check the catalog instead of stopping the turn to ask for credentials. Newly provided keys can be saved automatically for future sessions.
+Store API keys, FTP/SFTP, SSH private keys, and site logins in a single encrypted catalog. Agents check the catalog instead of stopping to ask. Newly provided credentials can be saved for every enrolled machine.
 
 ## Encrypted storage with instant synchronization
 

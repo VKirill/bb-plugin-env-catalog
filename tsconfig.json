@@ -23,6 +23,9 @@
   "include": [
     "server.ts",
     "app.tsx",
+    "contracts.ts",
+    "kinds.ts",
+    "i18n.ts",
     "components",
     "lib",
     "hooks"

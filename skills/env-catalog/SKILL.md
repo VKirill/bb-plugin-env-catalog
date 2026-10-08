@@ -1,101 +1,98 @@
 ---
 name: env-catalog
-description: "Unified encrypted catalog of environment variables and API keys. Use when you need external service credentials, tokens, or need to save a newly provided API key across sessions and machines."
+description: "Unified encrypted catalog of API keys, FTP/SFTP, SSH keys, and site logins. Use when you need credentials for an external service, server, or website, or to save a newly provided secret across sessions and machines."
 ---
 
 # Env Catalog
 
-Encrypted, centralized storage for API keys, tokens, and environment variables shared across all BB sessions and connected machines.
+> **Inside a Lane Pilot errand or PM chat** (`LANE_PILOT_AGENT_TYPE` set / tools `lane_pilot_*` present) read only: `env_list`, `env_get`, `env_request`. Use a value by piping it straight to the consumer or loading it into a shell variable without echo, and never print it (`bb env-catalog get --raw` and `export` write values into the thread's tool output: use `env_get` inside a command instead). `env_set` and `env_delete` change the catalog shared by every machine, so call them only when the owner asked for that change in this chat or the errand is authorized for changes (`authorized: true`).
+
+Encrypted storage on the BB server for API keys, FTP/FTPS/SFTP accounts, SSH private keys, and site logins. Every enrolled machine sees the same catalog.
 
 ## When to Use
 
-1. **Before asking the user for an API key:**
-   Check if the key is already stored in the catalog.
-   - Run `env_list` to see available keys.
-   - Run `env_get` with the exact variable name (e.g. `OPENAI_API_KEY`, `TAVILY_API_KEY`).
-2. **If a required API key or secret is missing:**
-   **DO NOT ask the user to type or paste secrets into chat** (to avoid leaking into transcripts and LLM context).
-   Instead, call `env_request`. This opens a secure masked modal in the BB interface where the user can enter the key safely. The value is encrypted (AES-256-GCM) and stored directly in the Env Catalog.
-3. **When the user provides an API key or token in conversation:**
-   Automatically save it to the catalog using `env_set` so future turns and other machines can reuse it.
-4. **When generating a local `.env` file for a project or script:**
-   Retrieve the needed keys using `env_get` and populate the local file.
+1. **Before asking the user for any access** (API key, FTP, SSH, panel login):
+   - `env_list` — names, kinds, hosts (values omitted).
+   - `env_get` with the exact name.
+2. **If it is missing:** call `env_request` with `name` and `kind` (`secret` | `ftp` | `ssh` | `login`). Never ask the user to paste secrets into chat.
+3. **If they already pasted a credential in the thread** and asked you to keep it: save it with `env_set` so other machines can reuse it. Without that ask, use it for the task and tell them it is not saved.
+4. **File Gateway FTP** is only for browsing site files inside BB. Use Env Catalog when a script, `ssh`, deploy, or API call needs the credential.
+
+Do not repeat decrypted secrets in the chat reply. Use them in tools and commands.
+
+## Kinds
+
+| kind | What `env_get` returns |
+| --- | --- |
+| `secret` | `value` — API key, token, or raw PEM stored as one string |
+| `ftp` | `access`: protocol (`ftp`/`ftps`/`sftp`), host, port, username, password, optional root and fingerprint |
+| `ssh` | `access`: host, port, username, privateKey, optional passphrase and fingerprint |
+| `login` | `access`: url and/or host, username, password |
+
+Names stay env-style: `OPENAI_API_KEY`, `OVH_SSH`, `FTP_OHMYSEO`.
 
 ## Agent Tools
 
-### `env_request`
-Securely prompts the user with an in-app masked dialog in the thread to enter an API key or secret. The value is encrypted with AES-256-GCM and saved directly to the Env Catalog. It never appears in chat history or context.
-```json
-// Example call:
-{
-  "name": "OPENAI_API_KEY",
-  "purpose": "Required to run OpenAI model completions",
-  "service": "OpenAI",
-  "description": "OpenAI API key"
-}
-
-// Or requesting multiple keys at once:
-{
-  "names": ["OPENAI_API_KEY", "ANTHROPIC_API_KEY"],
-  "purpose": "Configure AI providers"
-}
-```
-
 ### `env_list`
-Lists all available keys in the catalog without disclosing values (preserves token budget and prevents accidental leaks).
 ```json
-// Example call:
-{ "query": "openai" }
+{ "query": "ovh", "kind": "ssh" }
 ```
+`kind` is optional. Result includes `name`, `kind`, `service`, `description`, `summary` (masked).
 
 ### `env_get`
-Retrieves the decrypted secret value by exact variable name.
 ```json
-// Example call:
-{ "name": "OPENAI_API_KEY" }
+{ "name": "OVH_SSH" }
 ```
 
 ### `env_set`
-Stores or updates a secret in the catalog.
+API key:
 ```json
-// Example call:
+{ "name": "TAVILY_API_KEY", "value": "tvly-xxxx", "service": "Tavily" }
+```
+SSH:
+```json
 {
-  "name": "TAVILY_API_KEY",
-  "value": "tvly-xxxx",
-  "service": "Tavily",
-  "description": "API key for Tavily web search"
+  "name": "OVH_SSH",
+  "kind": "ssh",
+  "host": "1.2.3.4",
+  "port": 22,
+  "username": "ubuntu",
+  "privateKey": "-----BEGIN OPENSSH PRIVATE KEY-----\n…",
+  "service": "OVH"
+}
+```
+FTP:
+```json
+{
+  "name": "FTP_SITE",
+  "kind": "ftp",
+  "protocol": "ftps",
+  "host": "ftp.example.com",
+  "port": 21,
+  "username": "deploy",
+  "password": "…",
+  "root": "/public_html"
 }
 ```
 
-### `env_delete`
-Removes a variable from the catalog.
+### `env_request`
 ```json
-// Example call:
+{ "name": "OVH_SSH", "kind": "ssh", "purpose": "Need SSH to deploy on OVH", "service": "OVH" }
+```
+
+### `env_delete`
+Only when the owner asked to remove this entry.
+```json
 { "name": "OLD_TOKEN" }
 ```
 
-## CLI Usage (Terminal)
+## CLI
 
-The plugin also exposes a CLI tool for scripts and terminal sessions:
 ```bash
-# List stored variables
-bb env-catalog list
-
-# Get a secret value
-bb env-catalog get OPENAI_API_KEY --raw
-
-# Save a new secret
-bb env-catalog set STRIPE_SECRET_KEY sk_live_... --service Stripe --desc "Live Stripe secret"
-
-# Securely request credentials from the user via in-app masked form
-bb env-catalog request OPENAI_API_KEY --purpose "Configure server" --describe OPENAI_API_KEY "OpenAI key"
-
-# Request multiple keys
-bb env-catalog request OPENAI_API_KEY ANTHROPIC_API_KEY --purpose "Configure AI providers"
-
-# Delete a secret
-bb env-catalog delete STRIPE_SECRET_KEY
-
-# Export to .env format
-bb env-catalog export --format env > .env
+bb env-catalog list [--kind ssh]
+bb env-catalog get OVH_SSH --raw          # prints the secret: terminal only, never in a Lane Pilot thread
+bb env-catalog set OPENAI_API_KEY sk-proj-... --service OpenAI
+bb env-catalog set OVH_SSH --kind ssh --host 1.2.3.4 --user ubuntu --private-key "-----BEGIN…"
+bb env-catalog request OVH_SSH --kind ssh --purpose "Deploy"
+bb env-catalog export --format json      # prints every secret: terminal only, owner-requested
 ```

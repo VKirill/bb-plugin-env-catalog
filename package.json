@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-env-catalog",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "engines": {
     "bb": ">=0.43",
@@ -8,7 +8,7 @@
   },
   "bb": {
     "name": "Env Catalog",
-    "description": "Unified secret and environment variable catalog with agent access and instant multi-machine sync.",
+    "description": "Unified encrypted catalog of API keys, FTP/SFTP, SSH, and logins with agent access on every enrolled machine.",
     "branding": {
       "icon": "./assets/icon.svg"
     },
@@ -44,7 +44,7 @@
     "tailwind-merge": "^3.4.0",
     "typescript": "^5.7.0"
   },
-  "description": "Unified secret and environment variable catalog with agent access and instant multi-machine sync.",
+  "description": "Unified encrypted catalog of API keys, FTP/SFTP, SSH, and logins with agent access on every enrolled machine.",
   "keywords": [
     "bb",
     "bb-plugin",

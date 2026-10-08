@@ -80,8 +80,8 @@ Zod rejects payloads that do not match an operation's declared shape. Errors rai
 |---|---|---|---|---|
 | `env_list` | Agent tool `env_list` | BB agent | List masked summaries, optionally filtered. | BB agent tool runtime; plugin defines no additional permission predicate (`server.ts:636-667`). |
 | `env_get` | Agent tool `env_get` | BB agent | Retrieve decrypted secret or structured access by exact name. | BB agent tool runtime; plugin defines no additional permission predicate (`server.ts:602-634`). |
-| `env_set` | Agent tool `env_set` | BB agent | Save secret or structured access. | Refuses every agent call (`refuseAgentTool`, 0.3.2); nothing is saved. |
-| `env_delete` | Agent tool `env_delete` | BB agent | Delete a named record. | Refuses every agent call (`refuseAgentTool`, 0.3.2); nothing is deleted. |
+| `env_set` | Agent tool `env_set` | BB agent | Save secret or structured access. | Refuses every agent call (`refuseAgentTool`, unreleased); nothing is saved. |
+| `env_delete` | Agent tool `env_delete` | BB agent | Delete a named record. | Refuses every agent call (`refuseAgentTool`, unreleased); nothing is deleted. |
 | `env_request` | Agent tool `env_request` | BB agent in active thread | Open a secure request form and save its completed response. | BB agent tool runtime plus required thread context (`server.ts:861-959`). |
 
 ### CLI commands

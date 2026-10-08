@@ -613,6 +613,15 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
+  // The tools that change the catalog refuse an agent (audit 2026-10-08 round 4, P0-6):
+  // the owner uses the page or answers an env_request form.
+  const refuseAgentTool = (method: "tool_env_set" | "tool_env_delete", ctx: { threadId?: string } | undefined) => {
+    const refusal = callerRefusal({ kind: "agent-thread", threadId: ctx?.threadId }, method);
+    if (refusal === null) return null;
+    bb.log.warn(`tool ${method} refused: agent thread ${ctx?.threadId ?? "?"}`);
+    return JSON.stringify({ success: false, refused: true, message: refusal });
+  };
+
   // Register Agent Tools
   bb.agents.registerTool({
     name: "env_get",
@@ -684,7 +693,7 @@ export default async function plugin(bb: BbPluginApi) {
   bb.agents.registerTool({
     name: "env_set",
     description:
-      "Store or update a credential in Env Catalog: API key (kind=secret), FTP/FTPS/SFTP, SSH host+private key, or a site login. Available to every enrolled machine.",
+      "Refused for agents: the owner stores credentials on the Env Catalog page or through the env_request form. Do not call; use env_request.",
     parameters: z.object({
       name: z.string().describe("Stable name (e.g. OPENAI_API_KEY, OVH_SSH, FTP_OHMYSEO)"),
       kind: credentialKindSchema
@@ -714,24 +723,29 @@ export default async function plugin(bb: BbPluginApi) {
         completed: "Saved secret to Env Catalog",
       },
     },
-    async execute({
-      name,
-      kind,
-      value,
-      description,
-      service,
-      tags,
-      protocol,
-      host,
-      port,
-      username,
-      password,
-      privateKey,
-      passphrase,
-      fingerprint,
-      root,
-      url,
-    }) {
+    async execute(
+      {
+        name,
+        kind,
+        value,
+        description,
+        service,
+        tags,
+        protocol,
+        host,
+        port,
+        username,
+        password,
+        privateKey,
+        passphrase,
+        fingerprint,
+        root,
+        url,
+      },
+      ctx,
+    ) {
+      const refused = refuseAgentTool("tool_env_set", ctx);
+      if (refused !== null) return refused;
       const resolved = parseKind(kind ?? "secret");
       const access =
         resolved === "secret"
@@ -768,7 +782,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.agents.registerTool({
     name: "env_delete",
-    description: "Delete an environment variable from the Env Catalog.",
+    description: "Refused for agents: the owner deletes entries on the Env Catalog page. Do not call.",
     parameters: z.object({
       name: z.string().describe("Variable name to delete"),
     }),
@@ -778,7 +792,9 @@ export default async function plugin(bb: BbPluginApi) {
         completed: "Deleted secret from Env Catalog",
       },
     },
-    async execute({ name }) {
+    async execute({ name }, ctx) {
+      const refused = refuseAgentTool("tool_env_delete", ctx);
+      if (refused !== null) return refused;
       const deleted = await deleteVariable(name);
       return JSON.stringify({
         success: deleted,
@@ -975,7 +991,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   // Dynamic Instructions for Agents
   bb.agents.contributeInstructions(() => {
-    return "Env Catalog is active. It stores API keys, FTP/FTPS/SFTP accounts, SSH private keys, and site logins encrypted on the BB server for every enrolled machine. Before asking the user: env_list (optional query or kind=secret|ftp|ssh|login), then env_get with the exact name. env_get returns value and/or access fields (host, username, password, privateKey). Do not repeat secrets in chat. If access is missing, env_request with name and kind — never ask the user to paste credentials into the thread. Newly given credentials: env_set (kind + fields). File Gateway FTP is only for browsing site files in BB; use Env Catalog when a script, SSH session, or API call needs the credential.";
+    return "Env Catalog is active. It stores API keys, FTP/FTPS/SFTP accounts, SSH private keys, and site logins encrypted on the BB server for every enrolled machine. Before asking the user: env_list (optional query or kind=secret|ftp|ssh|login), then env_get with the exact name. env_get returns value and/or access fields (host, username, password, privateKey). Do not repeat secrets in chat. If access is missing, env_request with name and kind — never ask the user to paste credentials into the thread. Agents cannot save or delete credentials: env_set and env_delete refuse; for new credentials use env_request (the owner enters them in a masked form). File Gateway FTP is only for browsing site files in BB; use Env Catalog when a script, SSH session, or API call needs the credential.";
   });
 
   // CLI Command Registration

@@ -12,8 +12,8 @@ The plugin equips every BB agent with native tools:
 - `env_request`: Opens a secure masked in-app modal in the thread to ask for missing credentials. Secrets are encrypted directly to the catalog without exposing them in chat transcripts.
 - `env_list`: Discovers available variable names and services while omitting raw values to preserve context tokens.
 - `env_get`: Retrieves a decrypted secret value on demand.
-- `env_set`: Stores newly provided keys with optional service tags and usage notes.
-- `env_delete`: Removes obsolete secrets.
+- `env_set`: Refuses agents (unreleased); credentials are saved by the owner through `env_request` or the page.
+- `env_delete`: Refuses agents (unreleased); the owner deletes on the page.
 
 A lightweight system instruction is automatically provided to agents at the start of each session, ensuring they check the catalog before asking for credentials, and use `env_request` instead of asking the user to type secrets into plain chat.
 

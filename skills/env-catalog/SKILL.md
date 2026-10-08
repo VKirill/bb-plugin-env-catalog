@@ -5,7 +5,7 @@ description: "Unified encrypted catalog of API keys, FTP/SFTP, SSH keys, and sit
 
 # Env Catalog
 
-> **Inside a Lane Pilot errand or PM chat** (`LANE_PILOT_AGENT_TYPE` set / tools `lane_pilot_*` present) read only: `env_list`, `env_get`, `env_request`. Use a value by piping it straight to the consumer or loading it into a shell variable without echo, and never print it (`bb env-catalog get --raw` and `export` write values into the thread's tool output: use `env_get` inside a command instead). `env_set` and `env_delete` change the catalog shared by every machine, so call them only when the owner asked for that change in this chat or the errand is authorized for changes (`authorized: true`).
+> **Inside a Lane Pilot errand or PM chat** (`LANE_PILOT_AGENT_TYPE` set / tools `lane_pilot_*` present) read only: `env_list`, `env_get`, `env_request`. Use a value by piping it straight to the consumer or loading it into a shell variable without echo, and never print it (`bb env-catalog get --raw` and `export` write values into the thread's tool output: use `env_get` inside a command instead). `env_set` and `env_delete` change the catalog shared by every machine and are refused for every agent (unreleased): ask the owner through `env_request`, or have them change it on the Env Catalog page.
 
 Encrypted storage on the BB server for API keys, FTP/FTPS/SFTP accounts, SSH private keys, and site logins. Every enrolled machine sees the same catalog.
 
@@ -15,7 +15,7 @@ Encrypted storage on the BB server for API keys, FTP/FTPS/SFTP accounts, SSH pri
    - `env_list` — names, kinds, hosts (values omitted).
    - `env_get` with the exact name.
 2. **If it is missing:** call `env_request` with `name` and `kind` (`secret` | `ftp` | `ssh` | `login`). Never ask the user to paste secrets into chat.
-3. **If they already pasted a credential in the thread** and asked you to keep it: save it with `env_set` so other machines can reuse it. Without that ask, use it for the task and tell them it is not saved.
+3. **If they already pasted a credential in the thread** and asked you to keep it: `env_set` refuses agents, so call `env_request` for that name (the owner enters it in the masked form) or tell them to add it on the Env Catalog page. Without that ask, use it for the task and tell them it is not saved.
 4. **File Gateway FTP** is only for browsing site files inside BB. Use Env Catalog when a script, `ssh`, deploy, or API call needs the credential.
 
 Do not repeat decrypted secrets in the chat reply. Use them in tools and commands.
@@ -81,14 +81,14 @@ FTP:
 ```
 
 ### `env_delete`
-Only when the owner asked to remove this entry.
+Refused for agents (unreleased): the owner removes an entry on the Env Catalog page.
 ```json
 { "name": "OLD_TOKEN" }
 ```
 
 ## CLI
 
-On a VK core, `get`, `set`, `delete`, `export` and `import-machine-env` run only for the owner's own terminal and the Env Catalog page; inside an agent session the CLI answers "Refused" and agents use the tools above (`env_get`, `env_set`, `env_delete`, `env_request`). `list` and `request` work everywhere.
+On a VK core, `get`, `set`, `delete`, `export` and `import-machine-env` run only for the owner's own terminal and the Env Catalog page; inside an agent session the CLI answers "Refused" and agents use the read tools above (`env_get`, `env_list`, `env_request`; `env_set` and `env_delete` refuse). `list` and `request` work everywhere.
 
 ```bash
 bb env-catalog list [--kind ssh]

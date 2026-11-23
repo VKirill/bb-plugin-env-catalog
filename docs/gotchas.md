@@ -67,7 +67,7 @@ TL;DR: Credential handling has sharp edges around master-key replacement, `.env`
 
 ### CLI has no file-import command
 
-**Problem:** CLI registration includes `import-machine-env`, but no CLI `import` file command; file import is provided by UI RPC (`server.ts:1046-1087`, `server.ts:112-120`).
+**Problem:** The CLI has no `import` file command; file import is provided by UI RPC (`server.ts:1046-1087`, `server.ts:112-120`).
 
 **Risk:** A shell workflow copied from a prior README or another release can refer to an unavailable command.
 

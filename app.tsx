@@ -421,19 +421,6 @@ function EnvCatalogPage() {
   const [formPending, setFormPending] = useState(false);
   const [importText, setImportText] = useState("");
   const [importPending, setImportPending] = useState(false);
-  const [importingMachineEnv, setImportingMachineEnv] = useState(false);
-
-  const handleImportMachineEnv = async () => {
-    setImportingMachineEnv(true);
-    try {
-      await rpc.call("env_import_machine_env", null);
-      refetch();
-    } catch (cause) {
-      report(cause);
-    } finally {
-      setImportingMachineEnv(false);
-    }
-  };
 
   const openAddModal = () => {
     setEditingName(null);
@@ -571,18 +558,7 @@ function EnvCatalogPage() {
           </div>
 
           <div className="flex w-full shrink-0 flex-col gap-2 sm:ml-auto sm:w-[360px]">
-            <div className="grid w-full grid-cols-3 gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleImportMachineEnv}
-                disabled={importingMachineEnv}
-                aria-label={t("syncEnv")}
-                className="h-9 w-full px-2 text-xs font-normal"
-              >
-                <Icon name="FolderSync" className="mr-1 size-3.5 shrink-0" />
-                <span className="truncate">{importingMachineEnv ? t("syncing") : t("syncEnv")}</span>
-              </Button>
+            <div className="grid w-full grid-cols-2 gap-2">
               <Button
                 variant="outline"
                 size="sm"

@@ -115,3 +115,9 @@ Every issuance (tool, CLI, and a plugin's `env_get_value`) is a row in `env_issu
 **Consequences:** Any process that can reach the plugin (an agent, or a script calling the BB HTTP API, which has no login) can read, overwrite or delete every entry. This is the owner's accepted trade-off; the journal covers the agent paths (tool and CLI) but not the page or a plugin's `env_get_value`, because stock BB does not say who is calling an RPC. A shell guard in another component (Lane Pilot `guard_shell.py`, `bb-shim.ts`, the OpenCode deny list) must not block `bb env-catalog get/set/delete/export` or the plugin RPC any more; see `docs/consumers.md`. Tests: `lib/server-access.test.ts` (whole flow over `server.ts`), `lib/journal.test.ts`.
 
 **Sources:** `server.ts` (`recordAccess`, the tools and `run`), `lib/journal.ts`, `app.tsx` (`JournalSection`).
+
+## No machine-environment import (0.3.4)
+
+**Decision:** The "Sync Env" button, the `env_import_machine_env` RPC and the CLI `import-machine-env` are removed.
+
+**Why:** The import opened BB's `bb.db` with the plugin's own `better-sqlite3` build and decrypted BB's machine-environment values with BB's key file. A second SQLite build inside the BB server process can drop the server's file locks on `bb.db` and corrupt it, and BB's secrets are BB's to hand out. The SDK lists machine-environment variables without values, so there is no supported replacement: such keys are re-entered in the catalog once.

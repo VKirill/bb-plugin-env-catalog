@@ -2,7 +2,6 @@ import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
-import Database from "better-sqlite3";
 import { z } from "zod";
 import { ENV_REQUEST_RENDERER_ID, envRequestResponseSchema } from "./contracts.js";
 import {
@@ -129,12 +128,6 @@ export const rpcContract = defineRpcContract({
       format: z.enum(["env", "json"]),
       overwrite: z.boolean().default(true),
     }),
-    output: z.object({
-      importedCount: z.number(),
-    }),
-  },
-  env_import_machine_env: {
-    input: z.null(),
     output: z.object({
       importedCount: z.number(),
     }),
@@ -514,74 +507,6 @@ export default async function plugin(bb: BbPluginApi) {
     return count;
   }
 
-  async function importFromMachineEnvironment(): Promise<number> {
-    const keyFile = join(dataDir, "machine-environment-key");
-    const mainDbFile = join(dataDir, "bb.db");
-
-    if (!existsSync(keyFile) || !existsSync(mainDbFile)) {
-      return 0;
-    }
-
-    const keyHex = readFileSync(keyFile, "utf8").trim();
-    if (!/^[a-f0-9]{64}$/u.test(keyHex)) {
-      return 0;
-    }
-    const key = Buffer.from(keyHex, "hex");
-
-    const mainDb = new Database(mainDbFile, { readonly: true });
-    try {
-      const rows = mainDb
-        .prepare(
-          "SELECT key, value FROM app_settings_values WHERE key LIKE 'machineEnvironment:%'"
-        )
-        .all() as Array<{ key: string; value: string }>;
-
-      let count = 0;
-      for (const r of rows) {
-        try {
-          const parsed = JSON.parse(r.value);
-          if (!parsed.name || !parsed.ciphertext) continue;
-
-          const encrypted = Buffer.from(parsed.ciphertext, "base64");
-          const iv = encrypted.subarray(0, 12);
-          const authTag = encrypted.subarray(12, 28);
-          const ciphertext = encrypted.subarray(28);
-
-          const decipher = createDecipheriv("aes-256-gcm", key, iv);
-          decipher.setAAD(Buffer.from(parsed.name));
-          decipher.setAuthTag(authTag);
-          const val = Buffer.concat([
-            decipher.update(ciphertext),
-            decipher.final(),
-          ]).toString("utf8");
-
-          const service = inferService(parsed.name);
-          const description =
-            parsed.note || (service ? `${service} API key / credential` : undefined);
-
-          await saveVariable({
-            name: parsed.name,
-            value: val,
-            description,
-            service,
-          });
-          count++;
-        } catch (err) {
-          bb.log.warn(`Failed to decrypt machine environment variable: ${String(err)}`);
-        }
-      }
-      if (count > 0) {
-        bb.realtime.publish(ENV_CATALOG_CHANGED, {
-          action: "import-machine-env",
-          count,
-        });
-      }
-      return count;
-    } finally {
-      mainDb.close();
-    }
-  }
-
   // ---- Agent access: free reads, passive journal ------------------------------------
   // Any agent session reads, saves and deletes entries at once (owner decision 2026-10-08):
   // no grant, no form, no wait. The only trace is the issuance journal (who, thread, project,
@@ -666,9 +591,6 @@ export default async function plugin(bb: BbPluginApi) {
     }),
     env_import: async ({ content, format, overwrite }) => ({
       importedCount: await importContent(content, format, overwrite),
-    }),
-    env_import_machine_env: async () => ({
-      importedCount: await importFromMachineEnvironment(),
     }),
     journal_list: async ({ limit, name }) => ({ entries: journal.listJournal(limit ?? 200, name) }),
   });
@@ -1073,7 +995,6 @@ export default async function plugin(bb: BbPluginApi) {
     "  bb env-catalog request <NAME...> [--kind secret|ftp|ssh|login] [--purpose <text>] [--describe <NAME> <text>] [--service <text>]",
     "  bb env-catalog delete <NAME>",
     "  bb env-catalog export [--format env|json]",
-    "  bb env-catalog import-machine-env",
   ].join("\n");
 
   function parseCliRequest(args: string[]): {
@@ -1174,11 +1095,6 @@ export default async function plugin(bb: BbPluginApi) {
         name: "export",
         summary: "Export secrets as .env or JSON",
         usage: "bb env-catalog export [--format env|json]",
-      },
-      {
-        name: "import-machine-env",
-        summary: "Import and decrypt all keys from BB Machine Environment",
-        usage: "bb env-catalog import-machine-env",
       },
     ],
     async run(argv, ctx) {
@@ -1355,13 +1271,6 @@ export default async function plugin(bb: BbPluginApi) {
           return { exitCode: 0, stdout: content };
         }
 
-        case "import-machine-env": {
-          const count = await importFromMachineEnvironment();
-          return reply(
-            { importedCount: count },
-            `Successfully imported and decrypted ${count} keys from BB Machine Environment.`
-          );
-        }
       }
 
       return { exitCode: 1, stderr: usage };

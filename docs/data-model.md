@@ -67,7 +67,7 @@ The table has no status-like column. Credential lifecycle is create/replace, rea
 
 | From | To | Function | When |
 |---|---|---|---|
-| Absent | Present | `saveVariable` (`server.ts:311-350`) | UI, agent tool, CLI, import, request, or machine-environment migration saves a name. |
+| Absent | Present | `saveVariable` (`server.ts:311-350`) | UI, agent tool, CLI, import, or request saves a name. |
 | Present | Present | `saveVariable` (`server.ts:327-350`) | A save uses the same name; the row is replaced and `created_at` is preserved. |
 | Present | Absent | `deleteVariable` (`server.ts:355-363`) | UI, agent tool, or CLI deletes that name. |
 
@@ -85,7 +85,6 @@ The table has no status-like column. Credential lifecycle is create/replace, rea
 | Agent tools | `env_set`, `env_delete`, completed `env_request` | `env_list`, `env_get` (`server.ts:601-959`) |
 | CLI | `set`, `delete`, completed `request`, machine import | `list`, `get`, `export` (`server.ts:1046-1258`) |
 | File import/export | `importContent` writes records; export is read-only | `env_variables` rows (`server.ts:366-491`) |
-| BB Machine Environment migration | Imports decrypted source records into this table | BB `app_settings_values` source rows, read-only (`server.ts:493-559`) |
 
 No retention schedule, expiration field, or cleanup job appears in this plugin's code (`server.ts:199-212`, `server.ts:1265-1268`). See [Gotchas](gotchas.md) for key-file replacement and export handling.
 

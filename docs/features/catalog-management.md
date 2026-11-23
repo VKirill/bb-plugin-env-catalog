@@ -33,7 +33,7 @@ The page text defaults to English and uses Russian when the BB document language
 5. Save returns before setting pending state or calling `env_save` when the trimmed name is empty. Otherwise it sends the selected kind, secret `value` or structured `access`, plus service and description; success closes the dialog and refetches, failure is reported, and the pending state is cleared in `finally` (`app.tsx:455-477`). The server validates and packs kind-specific access, encrypts it, writes or replaces the row, and publishes a change event (`kinds.ts:57-103`, `server.ts:311-353`).
 6. Reveal fetches `env_get_value` and displays its `reveal` text; toggling an already revealed row hides it. Fetch errors are reported and the per-row reveal flag is cleared (`app.tsx:489-506`, `server.ts:566-580`). Summaries mask secret values and show only connection identifiers for structured credentials (`server.ts:272-308`, `kinds.ts:150-175`).
 7. Delete starts from a confirmation dialog, then calls `env_delete`; any resolved call closes the confirmation and refetches the list, while a thrown error is reported (`app.tsx:479-487`, `app.tsx:814-830`, `server.ts:355-363`).
-8. Export calls `env_export` and opens the returned content; import chooses JSON when trimmed input starts with `[` and otherwise chooses `.env`, then calls `env_import` with overwrite enabled. Machine-environment import calls `env_import_machine_env`. Each action reports RPC errors; successful imports refetch the list (`app.tsx:426-436`, `app.tsx:519-547`).
+8. Export calls `env_export` and opens the returned content; import chooses JSON when trimmed input starts with `[` and otherwise chooses `.env`, then calls `env_import` with overwrite enabled. Each action reports RPC errors; successful imports refetch the list (`app.tsx:426-436`, `app.tsx:519-547`).
 
 ### `EnvCatalogPage` branches and outcomes
 
@@ -49,7 +49,6 @@ The page text defaults to English and uses Russian when the BB document language
 | Copy | Operator clicks copy. | Writes the supplied text to clipboard and marks the item copied; that marker clears after two seconds (`app.tsx:509-513`). | Clipboard failure is reported (`app.tsx:514-516`). |
 | Export | Operator selects `env` or `json`. | Calls `env_export`, stores returned content, and opens the export dialog (`app.tsx:519-523`). | RPC error is reported (`app.tsx:524-526`). |
 | Import | Trimmed input is non-empty; a leading `[` selects JSON, otherwise `.env`. | Calls `env_import` with overwrite enabled, closes the dialog, clears input, and refetches (`app.tsx:529-543`). | Blank input returns without a call; RPC error is reported and pending state resets (`app.tsx:529-547`). |
-| Machine-environment import | Operator triggers synchronization. | Calls `env_import_machine_env` and refetches (`app.tsx:426-430`). | RPC error is reported and the pending flag resets (`app.tsx:431-435`). |
 
 ### `rpcContract` and handler dispatch
 
@@ -65,7 +64,6 @@ The page text defaults to English and uses Russian when the BB document language
 | `env_delete` | Required name. | Returns `success: true` when a row is deleted and `false` when no row matched (`server.ts:96-103`, `server.ts:355-363`, `server.ts:586-589`). | No matching row is represented by `false`; it does not throw. |
 | `env_export` | Format is `env` or `json`. | Returns serialized content (`server.ts:104-111`, `server.ts:590-592`). | If AES-GCM decryption throws, `exportAll` and the RPC handler do not catch the exception (`server.ts:184-196`, `server.ts:366-405`, `server.ts:590-592`). |
 | `env_import` | Content and format `env` or `json`; overwrite defaults to `true`. | Imports accepted entries and returns their count (`server.ts:112-120`, `server.ts:593-595`). | Invalid JSON throws; malformed or unsupported rows may be skipped, while save validation errors reject (`server.ts:408-491`). |
-| `env_import_machine_env` | Input is `null`. | Returns the number of imported records (`server.ts:122-127`, `server.ts:596-598`). | Missing source files or invalid key format returns zero; individual decryption failures are logged and skipped (`server.ts:493-559`). |
 
 ### Credential modes
 

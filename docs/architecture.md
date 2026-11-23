@@ -68,7 +68,6 @@ The RPC handler calls `saveVariable`, which normalizes the name, packs and valid
 
 `EnvCatalogPage` owns the catalog page's modal and action state while `useEnvCatalog` supplies RPC, list data, refetching, and error reporting (`app.tsx:366-394`, `app.tsx:408-424`).
 
-1. Machine-environment import sets its pending flag, calls `env_import_machine_env`, and refetches on success; an RPC error is reported and the pending flag is reset in `finally` (`app.tsx:426-436`).
 2. Add resets the edit marker and form to blank defaults. Edit fetches the full named record, converts it into form state, and opens the same modal; errors are reported without opening it (`app.tsx:438-453`).
 3. Save returns before setting pending state or calling `env_save` when the trimmed name is empty. Otherwise it marks the form pending and sends `env_save`, using `value` for `secret` and `access` for structured kinds (`app.tsx:455-469`).
 4. A successful save closes the modal and refetches the list. A failed save is reported, and the pending flag is always cleared (`app.tsx:470-477`).

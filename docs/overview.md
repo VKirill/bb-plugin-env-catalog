@@ -24,13 +24,13 @@ TL;DR: Env Catalog is a BB plugin that stores named credentials in the BB server
 
 The catalog stores four credential kinds: plain secret values, FTP/FTPS/SFTP access, SSH access, and site logins (`kinds.ts:3-6`, `kinds.ts:13-37`). Structured access is packed into the encrypted value, while name, service, description, tags, and timestamps occupy separate columns (`kinds.ts:57-78`, `server.ts:202-210`).
 
-BB provides three main access surfaces. The UI offers search, view, edit, delete, import, export, and machine-environment import (`app.tsx:408-547`). Its text is English by default and switches to Russian when `document.documentElement.lang` starts with `ru` (`i18n.ts:1-4`, `i18n.ts:83-86`, `i18n.ts:167-182`). Registered agent tools list, retrieve, save, delete, and request credentials (`server.ts:601-959`). The `bb env-catalog` command group exposes corresponding terminal operations (`server.ts:966-1087`).
+BB provides three main access surfaces. The UI offers search, view, edit, delete, import, export (`app.tsx:408-547`). Its text is English by default and switches to Russian when `document.documentElement.lang` starts with `ru` (`i18n.ts:1-4`, `i18n.ts:83-86`, `i18n.ts:167-182`). Registered agent tools list, retrieve, save, delete, and request credentials (`server.ts:601-959`). The `bb env-catalog` command group exposes corresponding terminal operations (`server.ts:966-1087`).
 
 ## Stack
 
 - TypeScript with strict checking and ES2022 target (`tsconfig.json:1-22`).
 - BB Plugin SDK `0.4.87` for plugin APIs, app slots, and RPC (`package.json:26-29`, `server.ts:4`, `app.tsx:4-14`).
-- SQLite through BB storage migrations; `better-sqlite3` is a development dependency used by the machine-environment importer (`server.ts:200-212`, `package.json:30-40`).
+- SQLite through BB storage migrations; `better-sqlite3` is a development dependency used only by tests; runtime code never loads it or opens BB's `bb.db` (`lib/no-bb-db.test.ts`).
 - Zod `^4.3.6` for RPC and credential validation (`package.json:25`, `server.ts:6`, `kinds.ts:1`).
 - React app with HugeIcons and Radix UI dependencies (`package.json:20-25`, `package.json:30-38`).
 

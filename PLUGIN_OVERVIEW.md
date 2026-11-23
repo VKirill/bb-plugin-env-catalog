@@ -25,7 +25,6 @@ Open **Env Catalog** in the BB left sidebar to inspect and manage your stored se
 - Clean modals for adding or editing credentials.
 - «Журнал выдачи»: who read, saved or deleted what, and from which thread (never the value).
 - One-click bulk export and import in standard `.env` format.
-- "Sync Machine Env" button to decrypt and migrate existing BB Machine Environment variables in one step.
 
 ## Command-line access
 

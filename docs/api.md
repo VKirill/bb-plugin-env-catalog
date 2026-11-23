@@ -58,7 +58,6 @@ The contract assigns a Zod input and output shape to each RPC name. Optional fil
 | `env_delete` | Requires a string `name`. | Returns `success: true` if a row was deleted and `false` if no row matched; missing rows do not throw (`server.ts:96-103`, `server.ts:355-363`, `server.ts:586-589`). |
 | `env_export` | `format` must be `env` or `json`. | Returns serialized content. If AES-GCM decryption throws, `exportAll` and the RPC handler do not catch the exception (`server.ts:184-196`, `server.ts:366-405`, `server.ts:590-592`). |
 | `env_import` | Requires content and format `env` or `json`; `overwrite` defaults to `true`. | Returns imported count. Invalid JSON throws an invalid-format error; unsupported or invalid rows are skipped according to the import path (`server.ts:112-120`, `server.ts:408-491`, `server.ts:593-595`). |
-| `env_import_machine_env` | Input is `null`. | Returns imported count; missing source files or an invalid key encoding yield zero, and individual decryption failures are logged and skipped (`server.ts:122-127`, `server.ts:493-559`, `server.ts:596-598`). |
 
 Zod rejects payloads that do not match an operation's declared shape. Errors raised by a handler, such as a missing record in `env_get_value`, are returned as RPC failures (`server.ts:56-128`, `server.ts:566-599`).
 
@@ -72,7 +71,6 @@ Zod rejects payloads that do not match an operation's declared shape. Errors rai
 | `env_delete` | RPC `env_delete` | Plugin UI | Delete by name. | BB RPC host context; no plugin-specific user check in handler (`server.ts:96-103`, `server.ts:586-589`). |
 | `env_export` | RPC `env_export` | Plugin UI | Export all rows as `env` or `json`. | BB RPC host context; no plugin-specific user check in handler (`server.ts:104-111`, `server.ts:590-592`). |
 | `env_import` | RPC `env_import` | Plugin UI | Import `env` or `json` content; overwrite defaults to true. | BB RPC host context; no plugin-specific user check in handler (`server.ts:112-120`, `server.ts:593-595`). |
-| `env_import_machine_env` | RPC `env_import_machine_env` | Plugin UI | Import values from BB Machine Environment. | BB RPC host context; no plugin-specific user check in handler (`server.ts:122-127`, `server.ts:596-598`). |
 
 ### Journal RPC
 
@@ -98,7 +96,6 @@ Zod rejects payloads that do not match an operation's declared shape. Errors rai
 | `request` | `bb env-catalog request <NAME...>` | BB CLI user in active or selected thread | Ask for credentials using the BB form. | BB CLI registration; requires thread context (`server.ts:1067-1071`, `server.ts:1192-1231`). |
 | `delete` | `bb env-catalog delete <NAME>` | BB CLI user or script | Remove a record. | BB CLI registration; no plugin-specific user check (`server.ts:1073-1075`, `server.ts:1234-1240`). |
 | `export` | `bb env-catalog export` | BB CLI user or script | Write `env` or JSON content to stdout. | BB CLI registration; no plugin-specific user check (`server.ts:1078-1080`, `server.ts:1242-1249`). |
-| `import-machine-env` | `bb env-catalog import-machine-env` | BB CLI user or script | Copy/decrypt BB Machine Environment values into the catalog. | BB CLI registration; no plugin-specific user check (`server.ts:1083-1085`, `server.ts:1252-1258`). |
 
 ## Business rules
 
@@ -115,7 +112,7 @@ Schema validation errors reject invalid RPC inputs before a handler runs (`serve
 
 - RPC operation identifiers are not URL paths; consumers call the BB plugin RPC layer (`server.ts:562-599`).
 - `get` and `env_get` expose decrypted values to their callers; `list` omits them (`server.ts:602-667`, `server.ts:1141-1152`).
-- There is no CLI file-import command; `env_import` is available through UI RPC, while CLI supports machine-environment import (`server.ts:1046-1087`).
+- There is no CLI file-import command; `env_import` is available through UI RPC (`server.ts:1046-1087`).
 
 See [catalog management](features/catalog-management.md), [agent access](features/agent-access.md), and [import/export](features/import-export.md) for capability behavior.
 

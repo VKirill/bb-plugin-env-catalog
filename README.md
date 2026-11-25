@@ -20,7 +20,7 @@ The repository build uses the BB plugin CLI. Install and configure the plugin th
 ## Documentation
 
 - [Architecture](docs/architecture.md)
-- [Capabilities](docs/features/agent-access.md), [credential requests](docs/features/secure-requests.md), [catalog management](docs/features/catalog-management.md), and [import/export](docs/features/import-export.md)
+- [Capabilities](docs/features/agent-access.md), [credential requests](docs/features/secure-requests.md), [catalog management](docs/features/catalog-management.md), [import/export](docs/features/import-export.md), and the optional [page PIN or password](docs/features/page-lock.md)
 - [RPC, agent tools, and CLI](docs/api.md)
 - [Data model](docs/data-model.md)
 - [Gotchas](docs/gotchas.md) and [decisions](docs/decisions.md)

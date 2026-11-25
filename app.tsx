@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import {
   definePluginApp,
@@ -8,7 +8,12 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import type { rpcContract, EnvSummary } from "./server";
 import {
+  ENV_CATALOG_LOCK_CHANGED,
   ENV_REQUEST_RENDERER_ID,
+  LOCK_LIMITS,
+  LOCKED_MESSAGE,
+  passcodeProblem,
+  type LockKind,
   envRequestPayloadSchema,
   envRequestResponseSchema,
 } from "./contracts.js";
@@ -363,8 +368,370 @@ function KindFields({
   );
 }
 
-function useEnvCatalog() {
+function errorText(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
+interface LockSession {
+  /** Sent with every page RPC; null while no PIN is set. */
+  token: string | null;
+  enabled: boolean;
+  /** Kind of the stored passcode, and of the next one the settings ask for. */
+  kind: LockKind;
+  newKind: LockKind;
+  autoLockMs: number;
+  /** Ends this page's session and shows the lock screen. */
+  relock: () => void;
+  /** A new session after the PIN was set or changed. */
+  opened: (token: string) => void;
+  /** Reads the lock state again, after the PIN was removed. */
+  refresh: () => void;
+}
+
+const noop = () => undefined;
+const LockContext = createContext<LockSession>({
+  token: null,
+  enabled: false,
+  kind: "pin",
+  newKind: "pin",
+  autoLockMs: LOCK_LIMITS.autoLockMinutes.default * 60_000,
+  relock: noop,
+  opened: noop,
+  refresh: noop,
+});
+
+/** Page RPCs with this page's unlock token; a "locked" answer shows the lock screen. */
+function useCatalogRpc() {
   const rpc = useRpc<typeof rpcContract>();
+  const { token, relock } = useContext(LockContext);
+  return useMemo(() => {
+    const raw = rpc.call as (method: string, input: Record<string, unknown>) => Promise<unknown>;
+    const call = async (method: string, input: Record<string, unknown>) => {
+      try {
+        return await raw(method, { ...input, unlockToken: token });
+      } catch (cause) {
+        if (errorText(cause).includes(LOCKED_MESSAGE)) relock();
+        throw cause;
+      }
+    };
+    return { call: call as typeof rpc.call };
+  }, [rpc, token, relock]);
+}
+
+function LockScreen({
+  kind,
+  retryAfterMs,
+  onUnlocked,
+}: {
+  kind: LockKind;
+  retryAfterMs: number;
+  onUnlocked: (token: string) => void;
+}) {
+  const rpc = useRpc<typeof rpcContract>();
+  const [passcode, setPasscode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(
+    retryAfterMs > 0 ? t("lockRetry", { s: Math.ceil(retryAfterMs / 1000) }) : null,
+  );
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!passcode) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const { unlockToken } = await rpc.call("lock_unlock", { passcode });
+      onUnlocked(unlockToken);
+    } catch (cause) {
+      setError(errorText(cause));
+      setPasscode("");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex h-full min-h-0 flex-1 items-center justify-center overflow-y-auto bg-background px-4 py-12 text-foreground">
+      <form onSubmit={submit} className="w-full max-w-xs space-y-4 rounded-lg border border-border bg-card p-6 shadow-xs">
+        <div className="flex flex-col items-center gap-2 text-center">
+          <div className="flex size-10 items-center justify-center rounded-full bg-muted">
+            <Icon name="Lock" className="size-5 text-muted-foreground" />
+          </div>
+          <h1 className="text-base font-semibold tracking-tight">{t("lockedTitle")}</h1>
+          <p className="text-xs text-muted-foreground">
+            {kind === "pin" ? t("lockedHintPin") : t("lockedHintPassword")}
+          </p>
+        </div>
+        <Input
+          type="password"
+          autoFocus
+          autoComplete="off"
+          inputMode={kind === "pin" ? "numeric" : undefined}
+          aria-label={kind === "pin" ? t("wordPin") : t("wordPassword")}
+          placeholder={kind === "pin" ? t("wordPin") : t("wordPassword")}
+          value={passcode}
+          onChange={(e) => setPasscode(e.target.value)}
+          className="h-10 text-center"
+        />
+        {error ? (
+          <p role="alert" className="text-center text-xs text-destructive">
+            {error}
+          </p>
+        ) : null}
+        <Button type="submit" className="h-9 w-full" disabled={busy || !passcode}>
+          {t("lockUnlock")}
+        </Button>
+      </form>
+    </div>
+  );
+}
+
+function LockSettingsDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+  const rpc = useRpc<typeof rpcContract>();
+  const { enabled, kind, newKind, autoLockMs, opened, refresh } = useContext(LockContext);
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setCurrent("");
+    setNext("");
+    setConfirm("");
+    setError(null);
+  }, [open]);
+
+  const run = async (action: () => Promise<void>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await action();
+      onOpenChange(false);
+    } catch (cause) {
+      setError(errorText(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const save = (e: FormEvent) => {
+    e.preventDefault();
+    const problem = passcodeProblem(newKind, next);
+    if (problem === "pinDigits") return setError(t("lockPinRule", LOCK_LIMITS.pinDigits));
+    if (problem === "passwordLength") return setError(t("lockPasswordRule", LOCK_LIMITS.passwordLength));
+    if (next !== confirm) return setError(t("lockMismatch"));
+    void run(async () => {
+      const { unlockToken } = await rpc.call("lock_set", { currentPasscode: enabled ? current : null, passcode: next });
+      opened(unlockToken);
+      refresh();
+    });
+  };
+
+  const remove = () =>
+    void run(async () => {
+      await rpc.call("lock_disable", { passcode: current });
+      refresh();
+    });
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-sm">
+        <form onSubmit={save} className="space-y-4">
+          <DialogHeader>
+            <DialogTitle>
+              {enabled ? t("lockChangeTitle") : newKind === "pin" ? t("lockSetTitlePin") : t("lockSetTitlePassword")}
+            </DialogTitle>
+            <DialogDescription>{t("lockSetHint", { m: Math.round(autoLockMs / 60_000) })}</DialogDescription>
+          </DialogHeader>
+          {enabled ? (
+            <label className="grid gap-1.5 text-xs font-medium">
+              {t("lockCurrent")}
+              <Input
+                type="password"
+                autoComplete="off"
+                inputMode={kind === "pin" ? "numeric" : undefined}
+                value={current}
+                onChange={(e) => setCurrent(e.target.value)}
+              />
+            </label>
+          ) : null}
+          <label className="grid gap-1.5 text-xs font-medium">
+            {newKind === "pin" ? t("lockNewPin") : t("lockNewPassword")}
+            <Input
+              type="password"
+              autoComplete="new-password"
+              inputMode={newKind === "pin" ? "numeric" : undefined}
+              value={next}
+              onChange={(e) => setNext(e.target.value)}
+            />
+          </label>
+          <label className="grid gap-1.5 text-xs font-medium">
+            {t("lockConfirm")}
+            <Input
+              type="password"
+              autoComplete="new-password"
+              inputMode={newKind === "pin" ? "numeric" : undefined}
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+            />
+          </label>
+          {error ? (
+            <p role="alert" className="text-xs text-destructive">
+              {error}
+            </p>
+          ) : null}
+          <DialogFooter className="mt-2 gap-2">
+            {enabled ? (
+              <Button
+                type="button"
+                variant="destructive"
+                className="w-full sm:mr-auto sm:w-auto"
+                disabled={busy || !current}
+                onClick={remove}
+              >
+                {t("lockRemove")}
+              </Button>
+            ) : null}
+            <Button type="button" variant="outline" className="w-full sm:w-auto" onClick={() => onOpenChange(false)}>
+              {t("cancel")}
+            </Button>
+            <Button
+              type="submit"
+              className="w-full sm:w-auto"
+              disabled={busy || !next || !confirm || (enabled && !current)}
+            >
+              {t("save")}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+interface LockShape {
+  kind: LockKind;
+  newKind: LockKind;
+  autoLockMs: number;
+}
+
+type LockPhase =
+  | { phase: "loading" }
+  | { phase: "error"; message: string }
+  | { phase: "locked"; retryAfterMs: number }
+  | { phase: "open"; enabled: boolean; token: string | null };
+
+/** The navigation page: asks for the PIN when one is set, then shows the catalog. */
+function EnvCatalogNavPage() {
+  const rpc = useRpc<typeof rpcContract>();
+  const [state, setState] = useState<LockPhase>({ phase: "loading" });
+  const [shape, setShape] = useState<LockShape>({
+    kind: "pin",
+    newKind: "pin",
+    autoLockMs: LOCK_LIMITS.autoLockMinutes.default * 60_000,
+  });
+  const autoLockMs = useRef(shape.autoLockMs);
+  autoLockMs.current = shape.autoLockMs;
+  const tokenRef = useRef<string | null>(null);
+  const idleTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  const endSession = useCallback(() => {
+    clearTimeout(idleTimer.current);
+    const token = tokenRef.current;
+    tokenRef.current = null;
+    if (token) void rpc.call("lock_lock", { unlockToken: token }).catch(noop);
+  }, [rpc]);
+
+  const relock = useCallback(() => {
+    endSession();
+    setState({ phase: "locked", retryAfterMs: 0 });
+  }, [endSession]);
+
+  const lastPing = useRef(0);
+
+  /** User input on the page: restarts the idle timer and keeps the server session alive. */
+  const touch = useCallback(() => {
+    const token = tokenRef.current;
+    if (!token) return;
+    clearTimeout(idleTimer.current);
+    idleTimer.current = setTimeout(relock, autoLockMs.current);
+    if (Date.now() - lastPing.current < 60_000) return;
+    lastPing.current = Date.now();
+    void rpc.call("lock_status", { unlockToken: token }).catch(noop);
+  }, [rpc, relock]);
+
+  const opened = useCallback(
+    (token: string) => {
+      tokenRef.current = token;
+      lastPing.current = Date.now();
+      setState({ phase: "open", enabled: true, token });
+      touch();
+    },
+    [touch],
+  );
+
+  const refresh = useCallback(() => {
+    const asked = tokenRef.current;
+    rpc
+      .call("lock_status", { unlockToken: asked })
+      .then((status) => {
+        if (tokenRef.current !== asked) return;
+        autoLockMs.current = status.autoLockMs;
+        setShape({ kind: status.kind, newKind: status.newKind, autoLockMs: status.autoLockMs });
+        if (!status.unlocked) {
+          tokenRef.current = null;
+          setState({ phase: "locked", retryAfterMs: status.retryAfterMs });
+        } else if (!status.enabled) {
+          endSession();
+          setState({ phase: "open", enabled: false, token: null });
+        } else {
+          setState({ phase: "open", enabled: true, token: asked });
+          if (asked) touch();
+        }
+      })
+      .catch((cause) => setState({ phase: "error", message: errorText(cause) }));
+  }, [rpc, endSession, touch]);
+
+  useEffect(() => {
+    refresh();
+    return endSession;
+  }, [refresh, endSession]);
+  useRealtime(ENV_CATALOG_LOCK_CHANGED, refresh);
+
+  const session = useMemo<LockSession>(
+    () => ({
+      token: state.phase === "open" ? state.token : null,
+      enabled: state.phase === "open" && state.enabled,
+      ...shape,
+      relock,
+      opened,
+      refresh,
+    }),
+    [state, shape, relock, opened, refresh],
+  );
+
+  if (state.phase === "loading") return <EmptyState>{t("loading")}</EmptyState>;
+  if (state.phase === "error") {
+    return (
+      <div role="alert" className="m-6 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+        {state.message}
+      </div>
+    );
+  }
+  if (state.phase === "locked") return <LockScreen kind={shape.kind} retryAfterMs={state.retryAfterMs} onUnlocked={opened} />;
+  return (
+    <LockContext.Provider value={session}>
+      <div className="contents" onPointerDownCapture={touch} onKeyDownCapture={touch} onWheelCapture={touch}>
+        <EnvCatalogPage />
+      </div>
+    </LockContext.Provider>
+  );
+}
+
+function useEnvCatalog() {
+  const rpc = useCatalogRpc();
   const [variables, setVariables] = useState<EnvSummary[] | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -421,6 +788,8 @@ function EnvCatalogPage() {
   const [formPending, setFormPending] = useState(false);
   const [importText, setImportText] = useState("");
   const [importPending, setImportPending] = useState(false);
+  const [lockSettingsOpen, setLockSettingsOpen] = useState(false);
+  const lock = useContext(LockContext);
 
   const openAddModal = () => {
     setEditingName(null);
@@ -558,7 +927,7 @@ function EnvCatalogPage() {
           </div>
 
           <div className="flex w-full shrink-0 flex-col gap-2 sm:ml-auto sm:w-[360px]">
-            <div className="grid w-full grid-cols-2 gap-2">
+            <div className={cn("grid w-full gap-2", lock.enabled ? "grid-cols-4" : "grid-cols-3")}>
               <Button
                 variant="outline"
                 size="sm"
@@ -579,6 +948,34 @@ function EnvCatalogPage() {
                 <Icon name="FolderExport" className="mr-1 size-3.5 shrink-0" />
                 <span>{t("import")}</span>
               </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setLockSettingsOpen(true)}
+                className="h-9 w-full px-2 text-xs font-normal"
+              >
+                <Icon name="SecurityCheck" className="mr-1 size-3.5 shrink-0" />
+                <span>
+                  {lock.enabled
+                    ? lock.kind === "pin"
+                      ? t("wordPin")
+                      : t("wordPassword")
+                    : lock.newKind === "pin"
+                      ? t("lockSetPin")
+                      : t("lockSetPassword")}
+                </span>
+              </Button>
+              {lock.enabled ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={lock.relock}
+                  className="h-9 w-full px-2 text-xs font-normal"
+                >
+                  <Icon name="Lock" className="mr-1 size-3.5 shrink-0" />
+                  <span>{t("lockNow")}</span>
+                </Button>
+              ) : null}
             </div>
             <Button size="default" onClick={openAddModal} className="h-9 w-full font-medium shadow-xs">
               <Icon name="Plus" className="mr-1.5 size-4" />
@@ -840,6 +1237,8 @@ function EnvCatalogPage() {
         </DialogContent>
       </Dialog>
 
+      <LockSettingsDialog open={lockSettingsOpen} onOpenChange={setLockSettingsOpen} />
+
       <Dialog open={exportModalOpen} onOpenChange={setExportModalOpen}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
@@ -879,7 +1278,7 @@ const OUTCOME_LABEL: Record<string, "journalIssued" | "journalSaved" | "journalD
 
 // «Журнал выдачи»: who read, saved or deleted what, from which thread and when. Never the value.
 function JournalSection() {
-  const rpc = useRpc<typeof rpcContract>();
+  const rpc = useCatalogRpc();
   const [journal, setJournal] = useState<
     Array<{ id: number; at: string; name: string; outcome: string; via: string | null; threadId: string | null; threadTitle: string | null; projectName: string | null; purpose: string | null }>
   >([]);
@@ -1074,7 +1473,7 @@ export default definePluginApp((app) => {
     title: t("title"),
     icon: "Lock",
     path: "env-catalog",
-    component: EnvCatalogPage,
+    component: EnvCatalogNavPage,
   });
 
   app.slots.pendingInteraction({

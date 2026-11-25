@@ -121,3 +121,20 @@ Every issuance (tool, CLI, and a plugin's `env_get_value`) is a row in `env_issu
 **Decision:** The "Sync Env" button, the `env_import_machine_env` RPC and the CLI `import-machine-env` are removed.
 
 **Why:** The import opened BB's `bb.db` with the plugin's own `better-sqlite3` build and decrypted BB's machine-environment values with BB's key file. A second SQLite build inside the BB server process can drop the server's file locks on `bb.db` and corrupt it, and BB's secrets are BB's to hand out. The SDK lists machine-environment variables without values, so there is no supported replacement: such keys are re-entered in the catalog once.
+
+## 008. Optional PIN or password for the page (0.4.0)
+
+**Context:** The page opened with one click in BB and showed, revealed, copied and exported every entry. The owner asked for an optional PIN or password before the page opens.
+
+**Decision:**
+1. The PIN or password is optional and is off by default. The owner sets, changes and removes it on the page.
+2. The server enforces the lock. A lock screen only in the browser would not stop a direct RPC call, so each page RPC must send an unlock token from `lock_unlock`.
+3. Agent tools, the CLI and other plugins (caller kind `plugin`) are not gated. Decision 007 stays active: agents read without a wait.
+4. Plugin settings set the lock type (PIN or password), the idle time and the wrong-attempt lockout. The settings page does not need the PIN, so each value has a hard range.
+5. `bb env-catalog lock reset` removes a forgotten PIN. The CLI can already export every entry, so this does not decrease the protection.
+
+**Status:** Active.
+
+**Consequences:** The lock protects the page, not the catalog. A person who can start a BB thread can ask an agent for a value. On a BB host older than SDK 0.5.24 the RPC context has no caller, so other plugins that call `env_get_value` are refused while a PIN is set. See `docs/features/page-lock.md`.
+
+**Sources:** `lib/ui-lock.ts`, `server.ts` (`gate`, `lock_*` handlers, CLI `lock`), `app.tsx` (`EnvCatalogNavPage`, `LockScreen`, `LockSettingsDialog`).

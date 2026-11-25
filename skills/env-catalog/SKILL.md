@@ -98,4 +98,5 @@ bb env-catalog set OPENAI_API_KEY sk-proj-... --service OpenAI
 bb env-catalog set OVH_SSH --kind ssh --host 1.2.3.4 --user ubuntu --private-key "-----BEGIN…"
 bb env-catalog request OVH_SSH --kind ssh --purpose "Deploy"
 bb env-catalog export --format json      # prints every secret: only when the owner asked for an export
+bb env-catalog lock status                # is the Env Catalog page behind a PIN? (`lock reset` removes it: only when the owner asks)
 ```

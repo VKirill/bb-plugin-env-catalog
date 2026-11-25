@@ -3,7 +3,13 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { ENV_REQUEST_RENDERER_ID, envRequestResponseSchema } from "./contracts.js";
+import {
+  ENV_CATALOG_LOCK_CHANGED,
+  ENV_REQUEST_RENDERER_ID,
+  LOCK_KINDS,
+  LOCK_LIMITS,
+  envRequestResponseSchema,
+} from "./contracts.js";
 import {
   accessFromFlat,
   credentialKindSchema,
@@ -15,6 +21,7 @@ import {
   type CredentialKind,
 } from "./kinds.js";
 import { JOURNAL_MIGRATIONS, createJournalStore, type JournalInput } from "./lib/journal.js";
+import { UI_LOCK_MIGRATIONS, createUiLock, parseLockConfig } from "./lib/ui-lock.js";
 
 export interface EnvRecord {
   name: string;
@@ -66,9 +73,13 @@ const journalEntrySchema = z.object({
   purpose: z.string().nullable(),
 });
 
+/** Page session from lock_unlock; absent while no PIN is set. */
+const unlockToken = z.string().nullable().optional();
+
 export const rpcContract = defineRpcContract({
   env_list: {
     input: z.object({
+      unlockToken,
       query: z.string().nullable().optional(),
       kind: credentialKindSchema.nullable().optional(),
     }),
@@ -78,6 +89,7 @@ export const rpcContract = defineRpcContract({
   },
   env_get_value: {
     input: z.object({
+      unlockToken,
       name: z.string(),
     }),
     output: z.object({
@@ -93,6 +105,7 @@ export const rpcContract = defineRpcContract({
   },
   env_save: {
     input: z.object({
+      unlockToken,
       name: z.string().trim().min(1),
       kind: credentialKindSchema.nullable().optional(),
       value: z.string().nullable().optional(),
@@ -108,6 +121,7 @@ export const rpcContract = defineRpcContract({
   },
   env_delete: {
     input: z.object({
+      unlockToken,
       name: z.string(),
     }),
     output: z.object({
@@ -116,6 +130,7 @@ export const rpcContract = defineRpcContract({
   },
   env_export: {
     input: z.object({
+      unlockToken,
       format: z.enum(["env", "json"]),
     }),
     output: z.object({
@@ -124,6 +139,7 @@ export const rpcContract = defineRpcContract({
   },
   env_import: {
     input: z.object({
+      unlockToken,
       content: z.string(),
       format: z.enum(["env", "json"]),
       overwrite: z.boolean().default(true),
@@ -135,14 +151,55 @@ export const rpcContract = defineRpcContract({
   // Issuance journal: who read, saved or deleted what (never the value).
   journal_list: {
     input: z.object({
+      unlockToken,
       limit: z.number().int().min(1).max(1000).nullable().optional(),
       name: z.string().nullable().optional(),
     }),
     output: z.object({ entries: z.array(journalEntrySchema) }),
   },
+  // Optional PIN or password for this page (lib/ui-lock.ts).
+  lock_status: {
+    input: z.object({ unlockToken }),
+    output: z.object({
+      enabled: z.boolean(),
+      unlocked: z.boolean(),
+      retryAfterMs: z.number(),
+      kind: z.enum(LOCK_KINDS),
+      newKind: z.enum(LOCK_KINDS),
+      autoLockMs: z.number(),
+    }),
+  },
+  lock_unlock: {
+    input: z.object({ passcode: z.string() }),
+    output: z.object({ unlockToken: z.string() }),
+  },
+  lock_lock: {
+    input: z.object({ unlockToken }),
+    output: z.object({ success: z.boolean() }),
+  },
+  lock_set: {
+    input: z.object({ currentPasscode: z.string().nullable(), passcode: z.string() }),
+    output: z.object({ unlockToken: z.string() }),
+  },
+  lock_disable: {
+    input: z.object({ passcode: z.string() }),
+    output: z.object({ success: z.boolean() }),
+  },
 });
 
+/** The host passes each call's context (caller) as a second argument; SDK 0.4.87 types only the first. */
+type RpcHandlers = {
+  [M in keyof typeof rpcContract]: (
+    input: z.output<(typeof rpcContract)[M]["input"]>,
+    context?: unknown,
+  ) => Promise<z.input<(typeof rpcContract)[M]["output"]>>;
+};
+
 export const ENV_CATALOG_CHANGED = "env-catalog:changed";
+
+function intRange(limit: { min: number; max: number }) {
+  return z.number().int().min(limit.min).max(limit.max);
+}
 
 function inferService(name: string, kind?: CredentialKind): string | undefined {
   const upper = name.toUpperCase();
@@ -225,8 +282,42 @@ export default async function plugin(bb: BbPluginApi) {
     );`,
     `CREATE INDEX IF NOT EXISTS idx_env_service ON env_variables(service);`,
     ...JOURNAL_MIGRATIONS,
+    ...UI_LOCK_MIGRATIONS,
   ]);
   const journal = createJournalStore(db);
+  const lockSettings = bb.settings.define({
+    lockType: {
+      type: "select",
+      label: "Page lock: PIN or password",
+      description:
+        "Kind of the next PIN or password you set on the Env Catalog page: pin (digits only) or password (any characters). A PIN that is already set keeps its kind until you change it.",
+      options: [...LOCK_KINDS],
+      default: "pin",
+    },
+    autoLockMinutes: {
+      type: "number",
+      label: "Page lock: lock after idle minutes",
+      description: `The page locks after this many minutes without input (${LOCK_LIMITS.autoLockMinutes.min} to ${LOCK_LIMITS.autoLockMinutes.max}).`,
+      default: LOCK_LIMITS.autoLockMinutes.default,
+      experimental_schema: intRange(LOCK_LIMITS.autoLockMinutes),
+    },
+    maxAttempts: {
+      type: "number",
+      label: "Page lock: wrong attempts before lockout",
+      description: `${LOCK_LIMITS.maxAttempts.min} to ${LOCK_LIMITS.maxAttempts.max}.`,
+      default: LOCK_LIMITS.maxAttempts.default,
+      experimental_schema: intRange(LOCK_LIMITS.maxAttempts),
+    },
+    lockoutMinutes: {
+      type: "number",
+      label: "Page lock: first lockout minutes",
+      description: `${LOCK_LIMITS.lockoutMinutes.min} to ${LOCK_LIMITS.lockoutMinutes.max}. The lockout doubles after each further wrong attempt, to at most 60 minutes.`,
+      default: LOCK_LIMITS.lockoutMinutes.default,
+      experimental_schema: intRange(LOCK_LIMITS.lockoutMinutes),
+    },
+  });
+  let lockConfig = parseLockConfig(await lockSettings.get());
+  const uiLock = createUiLock(db, () => lockConfig);
 
   const columns = db
     .prepare("PRAGMA table_info(env_variables)")
@@ -557,12 +648,30 @@ export default async function plugin(bb: BbPluginApi) {
     })().catch((err: unknown) => bb.log.warn(`journal: write failed: ${String(err)}`));
   }
 
+  /**
+   * Page RPCs need an unlock token once a PIN is set. Other plugins (callRpc, verified by the host)
+   * pass: they read credentials the way agents and the CLI do.
+   */
+  function gate(token: string | null | undefined, context: unknown): void {
+    const caller = (context as { experimental_caller?: { kind?: string } } | undefined)?.experimental_caller;
+    if (caller?.kind === "plugin") return;
+    uiLock.requireUnlocked(token ?? null);
+  }
+
+  const lockChanged = () => bb.realtime.publish(ENV_CATALOG_LOCK_CHANGED, {});
+  lockSettings.onChange((next) => {
+    lockConfig = parseLockConfig(next);
+    lockChanged();
+  });
+
   // Register RPC Handlers for Frontend UI
-  bb.rpc.register(rpcContract, {
-    env_list: async ({ query, kind }) => ({
-      variables: await listSummaries(query, kind),
-    }),
-    env_get_value: async ({ name }) => {
+  const handlers: RpcHandlers = {
+    env_list: async ({ unlockToken, query, kind }, context) => {
+      gate(unlockToken, context);
+      return { variables: await listSummaries(query, kind) };
+    },
+    env_get_value: async ({ unlockToken, name }, context) => {
+      gate(unlockToken, context);
       const record = await getVariable(name);
       if (!record) {
         throw new Error(`Secret '${name}' not found.`);
@@ -578,22 +687,46 @@ export default async function plugin(bb: BbPluginApi) {
         tags: record.tags ?? null,
       };
     },
-    env_save: async (params) => {
+    env_save: async ({ unlockToken, ...params }, context) => {
+      gate(unlockToken, context);
       await saveVariable(params);
       return { success: true, name: params.name.trim() };
     },
-    env_delete: async ({ name }) => {
+    env_delete: async ({ unlockToken, name }, context) => {
+      gate(unlockToken, context);
       const success = await deleteVariable(name);
       return { success };
     },
-    env_export: async ({ format }) => ({
-      content: await exportAll(format),
-    }),
-    env_import: async ({ content, format, overwrite }) => ({
-      importedCount: await importContent(content, format, overwrite),
-    }),
-    journal_list: async ({ limit, name }) => ({ entries: journal.listJournal(limit ?? 200, name) }),
-  });
+    env_export: async ({ unlockToken, format }, context) => {
+      gate(unlockToken, context);
+      return { content: await exportAll(format) };
+    },
+    env_import: async ({ unlockToken, content, format, overwrite }, context) => {
+      gate(unlockToken, context);
+      return { importedCount: await importContent(content, format, overwrite) };
+    },
+    journal_list: async ({ unlockToken, limit, name }, context) => {
+      gate(unlockToken, context);
+      return { entries: journal.listJournal(limit ?? 200, name) };
+    },
+    lock_status: async ({ unlockToken }) => uiLock.status(unlockToken ?? null),
+    lock_unlock: async ({ passcode }) => ({ unlockToken: await uiLock.unlock(passcode) }),
+    lock_lock: async ({ unlockToken }) => {
+      uiLock.lock(unlockToken ?? null);
+      return { success: true };
+    },
+    lock_set: async ({ currentPasscode, passcode }) => {
+      const token = await uiLock.setPasscode(currentPasscode, passcode);
+      lockChanged();
+      return { unlockToken: token };
+    },
+    lock_disable: async ({ passcode }) => {
+      await uiLock.disable(passcode);
+      lockChanged();
+      return { success: true };
+    },
+  };
+  bb.rpc.register(rpcContract, handlers);
 
   // Register Agent Tools
   bb.agents.registerTool({
@@ -995,6 +1128,7 @@ export default async function plugin(bb: BbPluginApi) {
     "  bb env-catalog request <NAME...> [--kind secret|ftp|ssh|login] [--purpose <text>] [--describe <NAME> <text>] [--service <text>]",
     "  bb env-catalog delete <NAME>",
     "  bb env-catalog export [--format env|json]",
+    "  bb env-catalog lock status|reset",
   ].join("\n");
 
   function parseCliRequest(args: string[]): {
@@ -1095,6 +1229,11 @@ export default async function plugin(bb: BbPluginApi) {
         name: "export",
         summary: "Export secrets as .env or JSON",
         usage: "bb env-catalog export [--format env|json]",
+      },
+      {
+        name: "lock",
+        summary: "Show or remove the PIN or password of the Env Catalog page (set it on the page)",
+        usage: "bb env-catalog lock status|reset",
       },
     ],
     async run(argv, ctx) {
@@ -1269,6 +1408,23 @@ export default async function plugin(bb: BbPluginApi) {
           }
           const content = await exportAll(fmt);
           return { exitCode: 0, stdout: content };
+        }
+
+        case "lock": {
+          const action = args[0] ?? "status";
+          if (action === "status") {
+            const { enabled } = uiLock.status(null);
+            return reply({ enabled }, enabled ? "The Env Catalog page needs a PIN or password." : "The Env Catalog page has no PIN or password.");
+          }
+          if (action === "reset") {
+            const removed = uiLock.reset();
+            if (removed) lockChanged();
+            return reply(
+              { success: true, removed },
+              removed ? "Removed the PIN or password of the Env Catalog page." : "The Env Catalog page has no PIN or password.",
+            );
+          }
+          return error("Usage: bb env-catalog lock status|reset");
         }
 
       }

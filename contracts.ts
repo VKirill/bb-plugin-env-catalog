@@ -68,3 +68,29 @@ export const envRequestResponseSchema = z.object({
 export type EnvRequestResponse = z.infer<typeof envRequestResponseSchema>;
 
 export const ENV_REQUEST_RENDERER_ID = "env-catalog-request";
+
+export const ENV_CATALOG_LOCK_CHANGED = "env-catalog:lock-changed";
+export const LOCKED_MESSAGE = "Env Catalog is locked. Enter the PIN or password to open it.";
+
+export const LOCK_KINDS = ["pin", "password"] as const;
+export type LockKind = (typeof LOCK_KINDS)[number];
+
+/** Limits of the page-lock settings. The upper limits keep guessing slow whatever the settings say. */
+export const LOCK_LIMITS = {
+  autoLockMinutes: { min: 1, max: 120, default: 5 },
+  maxAttempts: { min: 3, max: 10, default: 5 },
+  lockoutMinutes: { min: 1, max: 60, default: 1 },
+  pinDigits: { min: 4, max: 12 },
+  passwordLength: { min: 6, max: 128 },
+} as const;
+
+export type PasscodeProblem = "pinDigits" | "passwordLength";
+
+export function passcodeProblem(kind: LockKind, passcode: string): PasscodeProblem | null {
+  if (kind === "pin") {
+    const { min, max } = LOCK_LIMITS.pinDigits;
+    return new RegExp(`^[0-9]{${min},${max}}$`, "u").test(passcode) ? null : "pinDigits";
+  }
+  const { min, max } = LOCK_LIMITS.passwordLength;
+  return passcode.length >= min && passcode.length <= max ? null : "passwordLength";
+}

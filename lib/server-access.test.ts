@@ -37,6 +37,7 @@ async function boot() {
       contributeInstructions: (fn: () => string) => (instructions = fn()),
     },
     cli: { register: (c: any) => (cli = c) },
+    settings: { define: () => ({ get: async () => ({}), onChange() {} }) },
     ui: { requestInput: (request: unknown) => (forms.push(request), new Promise(() => {})) },
     sdk: {
       threads: { get: async ({ threadId }: { threadId: string }) => ({ id: threadId, title: `Title of ${threadId}`, titleFallback: null, projectId: "proj_1" }) },
@@ -137,4 +138,46 @@ test("no grant machinery is left: no grant RPCs, no form, tool text does not pro
   for (const t of h.registered) assert.doesNotMatch(t.description, /grant|Refused|WAITS/i, t.name);
   assert.doesNotMatch(h.instructions(), /grant|cannot save|refuse/i);
   assert.match(h.instructions(), /env_set/);
+});
+
+test("with a page PIN set, page RPCs need the unlock token; agents, the CLI and other plugins do not", async () => {
+  const h = await boot();
+  const client = { experimental_caller: { kind: "client" } };
+  const { unlockToken } = await h.call("lock_set", { currentPasscode: null, passcode: "4821" }, client);
+  for (const [method, input] of [
+    ["env_list", {}],
+    ["env_get_value", { name: "VASTAI_API_KEY" }],
+    ["env_export", { format: "env" }],
+    ["env_import", { content: "X=1", format: "env", overwrite: true }],
+    ["env_save", { name: "X", value: "1" }],
+    ["env_delete", { name: "VASTAI_API_KEY" }],
+    ["journal_list", {}],
+  ] as const) {
+    await assert.rejects(h.call(method, input, client), /locked/, method);
+    await assert.rejects(h.call(method, { ...input, unlockToken: "forged" }, client), /locked/, method);
+  }
+  assert.equal((await h.call("env_get_value", { name: "VASTAI_API_KEY", unlockToken }, client)).value, "sekret-value-1");
+  assert.equal((await h.call("lock_status", { unlockToken }, client)).unlocked, true);
+  assert.equal((await h.call("lock_status", {}, client)).unlocked, false);
+
+  const plugin = { experimental_caller: { kind: "plugin", pluginId: "lane-pilot" } };
+  assert.equal((await h.call("env_get_value", { name: "VASTAI_API_KEY" }, plugin)).value, "sekret-value-1");
+  assert.equal(parse(await h.tools.get("env_get")!({ name: "VASTAI_API_KEY" }, h.agentCtx())).value, "sekret-value-1");
+  assert.equal((await h.cli().run(["get", "VASTAI_API_KEY", "--raw"], {})).stdout, "sekret-value-1");
+
+  await h.call("lock_lock", { unlockToken }, client);
+  await assert.rejects(h.call("env_list", { unlockToken }, client), /locked/);
+  const again = (await h.call("lock_unlock", { passcode: "4821" }, client)).unlockToken;
+  assert.equal((await h.call("env_list", { unlockToken: again }, client)).variables.length, 1);
+});
+
+test("bb env-catalog lock reset removes a forgotten PIN; status reports it", async () => {
+  const h = await boot();
+  await h.call("lock_set", { currentPasscode: null, passcode: "4821" });
+  assert.equal((await h.cli().run(["lock", "status", "--json"], {})).stdout.includes('"enabled": true'), true);
+  const reset = await h.cli().run(["lock", "reset"], {});
+  assert.equal(reset.exitCode, 0);
+  assert.match(reset.stdout, /Removed/);
+  assert.equal((await h.call("env_list", {})).variables.length, 1);
+  assert.equal((await h.cli().run(["lock", "nope"], {})).exitCode, 1);
 });
